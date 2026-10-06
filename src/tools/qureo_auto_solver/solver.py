@@ -132,73 +132,202 @@ class QureoSolver:
 
         self.page = self.context.new_page()
 
-    def login(self, student_id=None, password=None):
-        """تسجيل الدخول تلقائيًا إلى البوابة."""
 
-        student_id = student_id or STUDENT_ID
-        password = password or PASSWORD
+def login(self, student_id=None, password=None):
+    """تسجيل الدخول إلى بوابة Qureo."""
 
-        if not student_id or not password:
-            raise RuntimeError(
-                "لازم تدخل اسم المستخدم وكلمة المرور."
-            )
+    student_id = student_id or STUDENT_ID
+    password = password or PASSWORD
 
-        print(
-            "🔑 جاري تسجيل الدخول تلقائيًا...",
-            flush=True,
+    if not student_id or not password:
+        raise RuntimeError(
+            "لازم تدخل اسم المستخدم وكلمة المرور."
         )
 
-        self.page.goto(
-            PORTAL_URL,
-            wait_until="domcontentloaded",
-        )
+    print(
+        "🔑 جاري تسجيل الدخول تلقائيًا...",
+        flush=True,
+    )
 
-        # صفحة البوابة تطلب أولًا اختيار نوع الحساب
-        # لإظهار حقول الدخول.
-        self.page.locator(
+    self.page.goto(
+        PORTAL_URL,
+        wait_until="domcontentloaded",
+        timeout=60000,
+    )
+
+    # نعطي الصفحة وقتًا قصيرًا لتكمل أي JavaScript
+    # خاص بها قبل البحث عن عناصر الدخول.
+    try:
+        self.page.wait_for_load_state(
+            "networkidle",
+            timeout=15000,
+        )
+    except Exception:
+        pass
+
+    # ---------------------------------------------------------
+    # 1) لو حقول الدخول ظاهرة بالفعل، لا نضغط اختيار الحساب.
+    # ---------------------------------------------------------
+    student_input = self.page.locator("#student_id")
+
+    if not student_input.is_visible(timeout=5000):
+        # -----------------------------------------------------
+        # 2) الصفحة القديمة كانت تحتاج الضغط على زر اختيار الحساب.
+        # -----------------------------------------------------
+        account_button = self.page.locator(
             ".portal-selection-button-secondary"
-        ).first.click()
+        ).first
 
-        self.page.wait_for_selector(
-            "#student_id",
-            timeout=30000,
-        )
+        if account_button.count() > 0:
+            try:
+                if account_button.is_visible(timeout=3000):
+                    print(
+                        "🖱️ جاري اختيار حساب الطالب...",
+                        flush=True,
+                    )
 
-        self.page.fill(
-            "#student_id",
-            student_id,
-        )
+                    account_button.click(
+                        timeout=10000
+                    )
 
-        self.page.fill(
-            "#password",
-            password,
-        )
+            except Exception:
+                pass
 
-        self.page.locator(
-            "button.login-button"
-        ).first.click()
-
-        # الموقع لا يغيّر الرابط بعد تسجيل الدخول،
-        # لذلك نتحقق من اختفاء نموذج الدخول.
+        # -----------------------------------------------------
+        # 3) ننتظر ظهور حقل اسم المستخدم.
+        # -----------------------------------------------------
         try:
             self.page.wait_for_selector(
                 "#student_id",
-                state="detached",
-                timeout=30000,
+                state="visible",
+                timeout=15000,
             )
 
         except Exception as e:
-            raise RuntimeError(
-                "فشل تسجيل الدخول — تأكد من اسم المستخدم "
-                "وكلمة المرور."
-            ) from e
+            # تشخيص الصفحة بدل Timeout غامض.
+            try:
+                current_url = self.page.url
 
-        time.sleep(0.4)
+                title = self.page.title()
 
-        print(
-            "✅ تم تسجيل الدخول.",
-            flush=True,
+                body_text = self.page.locator(
+                    "body"
+                ).inner_text(
+                    timeout=5000
+                )
+
+                body_text = re.sub(
+                    r"\s+",
+                    " ",
+                    body_text,
+                ).strip()
+
+                if len(body_text) > 1000:
+                    body_text = body_text[:1000]
+
+                raise RuntimeError(
+                    "تعذّر العثور على نموذج تسجيل الدخول في Qureo. "
+                    f"URL={current_url} | "
+                    f"TITLE={title} | "
+                    f"PAGE={body_text}"
+                ) from e
+
+            except RuntimeError:
+                raise
+
+            except Exception as diagnostic_error:
+                raise RuntimeError(
+                    "تعذّر العثور على نموذج تسجيل الدخول في Qureo "
+                    "ولم نتمكن من قراءة محتوى الصفحة."
+                ) from diagnostic_error
+
+    # ---------------------------------------------------------
+    # 4) تعبئة بيانات الدخول.
+    # ---------------------------------------------------------
+    self.page.locator(
+        "#student_id"
+    ).fill(
+        student_id
+    )
+
+    password_input = self.page.locator(
+        "#password"
+    )
+
+    if not password_input.is_visible(timeout=5000):
+        raise RuntimeError(
+            "ظهر حقل اسم المستخدم، لكن حقل كلمة المرور "
+            "#password غير ظاهر في صفحة Qureo."
         )
+
+    password_input.fill(
+        password
+    )
+
+    # ---------------------------------------------------------
+    # 5) الضغط على زر تسجيل الدخول.
+    # ---------------------------------------------------------
+    login_button = self.page.locator(
+        "button.login-button"
+    ).first
+
+    if login_button.count() == 0:
+        raise RuntimeError(
+            "لم يتم العثور على زر تسجيل الدخول "
+            "button.login-button في صفحة Qureo."
+        )
+
+    try:
+        login_button.click(
+            timeout=15000
+        )
+
+    except Exception as e:
+        raise RuntimeError(
+            "تعذّر الضغط على زر تسجيل الدخول في Qureo."
+        ) from e
+
+    # ---------------------------------------------------------
+    # 6) انتظار اختفاء نموذج الدخول.
+    # ---------------------------------------------------------
+    try:
+        self.page.wait_for_selector(
+            "#student_id",
+            state="detached",
+            timeout=30000,
+        )
+
+    except Exception:
+        # بعض إصدارات الموقع لا تحذف العنصر،
+        # لذلك نتحقق أيضًا من URL أو تغيّر الصفحة.
+        try:
+            current_url = self.page.url
+
+            if (
+                "login" in current_url.lower()
+                or self.page.locator(
+                    "#student_id"
+                ).is_visible(timeout=2000)
+            ):
+                raise RuntimeError(
+                    "فشل تسجيل الدخول — تأكد من اسم المستخدم "
+                    "وكلمة المرور."
+                )
+
+        except RuntimeError:
+            raise
+
+        except Exception:
+            # لو العنصر اختفى فعليًا لكن Playwright لم يلتقط
+            # detached بالشكل المتوقع، نعتبر العملية ناجحة.
+            pass
+
+    time.sleep(0.8)
+
+    print(
+        "✅ تم تسجيل الدخول.",
+        flush=True,
+    )
 
     def enter_course(self, name):
         """اختيار مسار معيّن من صفحة البوابة."""
