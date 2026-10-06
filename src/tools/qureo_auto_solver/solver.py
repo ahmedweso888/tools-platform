@@ -1,691 +1,1252 @@
-from __future__ import annotations
-
-import logging
+import json
 import os
-import threading
+import re
+import sys
 import time
-import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
-from typing import Any
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from playwright.sync_api import sync_playwright
 
 
+if sys.stdout.encoding != "utf-8":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
-# ============================================================
-# Configuration
-# ============================================================
 
-MAX_ACCOUNTS = int(os.getenv("MAX_ACCOUNTS", "5"))
-JOB_TTL_SECONDS = int(os.getenv("JOB_TTL_SECONDS", "86400"))
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+PORTAL_URL = os.getenv(
+    "QUREO_PORTAL_LOGIN_URL",
+    "https://me-portal.qureo.education/login",
 )
 
-logger = logging.getLogger("tools-platform")
-
-
-# ============================================================
-# App
-# ============================================================
-
-app = FastAPI(
-    title="WISO Tools Platform",
-    version="1.0.0",
+PORTAL_HOME = os.getenv(
+    "QUREO_PORTAL_HOME_URL",
+    "https://me-portal.qureo.education/",
 )
 
+BASE = os.getenv(
+    "QUREO_BASE_URL",
+    "https://me-tp.qureo.education",
+).rstrip("/")
 
-allowed_origins_raw = os.getenv("ALLOWED_ORIGINS", "*").strip()
+JSON_HEADERS = {"Content-Type": "application/json"}
 
-if allowed_origins_raw == "*":
-    allowed_origins = ["*"]
-else:
-    allowed_origins = [
-        origin.strip()
-        for origin in allowed_origins_raw.split(",")
-        if origin.strip()
-    ]
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ANSWER_FILE = os.path.join(SCRIPT_DIR, "answers.json")
 
+STUDENT_ID = ""
+PASSWORD = ""
+COURSES = ["Python", "JavaScript"]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=allowed_origins != ["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# خطّافات اختيارية تستخدمها الواجهة:
+# التقدم + طلب الإيقاف
+PROGRESS = None
+SHOULD_STOP = None
 
 
-# ============================================================
-# Models
-# ============================================================
-
-class Account(BaseModel):
-    code: str = Field(min_length=1, max_length=256)
-    password: str = Field(min_length=1, max_length=1024)
-
-
-class SprixSolveRequest(BaseModel):
-    accounts: list[Account] = Field(
-        min_length=1,
-        max_length=MAX_ACCOUNTS,
-    )
-    subject_id: str = Field(
-        default="7",
-        min_length=1,
-        max_length=64,
-    )
+def emit_progress(course, done, total, label=""):
+    if PROGRESS:
+        try:
+            PROGRESS(course, done, total, label)
+        except Exception:
+            pass
 
 
-class QureoSolveRequest(BaseModel):
-    accounts: list[Account] = Field(
-        min_length=1,
-        max_length=MAX_ACCOUNTS,
-    )
-    courses: list[str] = Field(
-        default_factory=lambda: ["Python", "JavaScript"],
-        max_length=20,
-    )
+def stop_requested():
+    if SHOULD_STOP:
+        try:
+            return bool(SHOULD_STOP())
+        except Exception:
+            return False
+    return False
 
 
-class SubjectsRequest(Account):
-    pass
+class QureoSolver:
+    def __init__(self, headless=False, courses=None):
+        self.headless = headless
+        self.courses = courses or COURSES
 
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
 
-# ============================================================
-# Jobs
-# ============================================================
+        self.answers = self._load_answers()
+        self.current_course = ""
 
-jobs: dict[str, dict[str, Any]] = {}
-jobs_lock = threading.Lock()
+    # ------------------------------------------------------------------ setup
 
-stop_events: dict[str, threading.Event] = {}
+    def start(self):
+        print("🚀 جاري تشغيل المتصفح...", flush=True)
 
-executor = ThreadPoolExecutor(
-    max_workers=max(2, MAX_ACCOUNTS),
-)
+        self.playwright = sync_playwright().start()
 
+        last_err = None
 
-TERMINAL_STATUSES = {
-    "completed",
-    "completed_with_errors",
-    "failed",
-    "stopped",
-}
+        # نحاول أولًا استخدام Chrome أو Edge المثبتين.
+        for channel in ("chrome", "msedge"):
+            try:
+                self.browser = self.playwright.chromium.launch(
+                    headless=self.headless,
+                    channel=channel,
+                )
 
+                print(
+                    f"🌐 تم تشغيل المتصفح: {channel}",
+                    flush=True,
+                )
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+                break
 
+            except Exception as e:
+                last_err = e
 
-def create_job(tool: str) -> str:
-    request_id = str(uuid.uuid4())
+        # Railway غالبًا لا يحتوي Chrome أو Edge system browser.
+        # لذلك نستخدم Chromium الذي يوفّره Playwright.
+        if self.browser is None:
+            try:
+                self.browser = self.playwright.chromium.launch(
+                    headless=self.headless,
+                )
 
-    now = utc_now()
+                print(
+                    "🌐 تم تشغيل Playwright Chromium.",
+                    flush=True,
+                )
 
-    with jobs_lock:
-        jobs[request_id] = {
-            "request_id": request_id,
-            "status": "queued",
-            "tool": tool,
-            "created_at": now,
-            "updated_at": now,
-            "completed_at": None,
-            "results": [],
-            "error": None,
-        }
+            except Exception as e:
+                last_err = e
 
-        stop_events[request_id] = threading.Event()
+                raise RuntimeError(
+                    "تعذّر تشغيل المتصفح على Railway. "
+                    "تأكد من تثبيت Playwright Chromium "
+                    "عبر `playwright install chromium`."
+                ) from last_err
 
-    return request_id
-
-
-def update_job(request_id: str, **updates: Any) -> None:
-    with jobs_lock:
-        job = jobs.get(request_id)
-
-        if not job:
-            return
-
-        job.update(
-            {
-                **updates,
-                "updated_at": utc_now(),
+        self.context = self.browser.new_context(
+            viewport={
+                "width": 1280,
+                "height": 800,
             }
         )
 
+        self.page = self.context.new_page()
 
-def get_job(request_id: str) -> dict[str, Any] | None:
-    with jobs_lock:
-        job = jobs.get(request_id)
+    def login(self, student_id=None, password=None):
+        """تسجيل الدخول تلقائيًا إلى البوابة."""
 
-        if not job:
+        student_id = student_id or STUDENT_ID
+        password = password or PASSWORD
+
+        if not student_id or not password:
+            raise RuntimeError(
+                "لازم تدخل اسم المستخدم وكلمة المرور."
+            )
+
+        print(
+            "🔑 جاري تسجيل الدخول تلقائيًا...",
+            flush=True,
+        )
+
+        self.page.goto(
+            PORTAL_URL,
+            wait_until="domcontentloaded",
+        )
+
+        # صفحة البوابة تطلب أولًا اختيار نوع الحساب
+        # لإظهار حقول الدخول.
+        self.page.locator(
+            ".portal-selection-button-secondary"
+        ).first.click()
+
+        self.page.wait_for_selector(
+            "#student_id",
+            timeout=30000,
+        )
+
+        self.page.fill(
+            "#student_id",
+            student_id,
+        )
+
+        self.page.fill(
+            "#password",
+            password,
+        )
+
+        self.page.locator(
+            "button.login-button"
+        ).first.click()
+
+        # الموقع لا يغيّر الرابط بعد تسجيل الدخول،
+        # لذلك نتحقق من اختفاء نموذج الدخول.
+        try:
+            self.page.wait_for_selector(
+                "#student_id",
+                state="detached",
+                timeout=30000,
+            )
+
+        except Exception as e:
+            raise RuntimeError(
+                "فشل تسجيل الدخول — تأكد من اسم المستخدم "
+                "وكلمة المرور."
+            ) from e
+
+        time.sleep(0.4)
+
+        print(
+            "✅ تم تسجيل الدخول.",
+            flush=True,
+        )
+
+    def enter_course(self, name):
+        """اختيار مسار معيّن من صفحة البوابة."""
+
+        print(
+            f"📥 جاري الدخول إلى مسار {name}...",
+            flush=True,
+        )
+
+        self.page.goto(
+            PORTAL_HOME,
+            wait_until="domcontentloaded",
+        )
+
+        self.page.wait_for_selector(
+            f"text={name}",
+            timeout=30000,
+        )
+
+        self.page.locator(
+            f"text={name}"
+        ).first.click()
+
+        self.page.wait_for_url(
+            "**/me-tp.qureo.education/**",
+            timeout=30000,
+        )
+
+        time.sleep(0.8)
+
+        print(
+            f"✅ تم الدخول إلى مسار {name}: {self.page.url}",
+            flush=True,
+        )
+
+    # -------------------------------------------------------------------- api
+
+    def _req(self, method, path, body=None):
+        url = BASE + path
+        req = self.context.request
+
+        if method == "GET":
+            return req.get(url)
+
+        data = json.dumps(
+            body if body is not None else {}
+        )
+
+        if method == "PUT":
+            return req.put(
+                url,
+                data=data,
+                headers=JSON_HEADERS,
+            )
+
+        if method == "POST":
+            return req.post(
+                url,
+                data=data,
+                headers=JSON_HEADERS,
+            )
+
+        raise ValueError(method)
+
+    def api_get_json(self, path, default=None):
+        r = self._req("GET", path)
+
+        if r.status != 200:
+            return default
+
+        try:
+            return r.json()
+        except Exception:
+            return default
+
+    # إرسال عدة طلبات متوازية من داخل الصفحة.
+
+    _FETCH_JS = """
+    async (reqs) => {
+        const out = new Array(reqs.length);
+
+        await Promise.all(
+            reqs.map(async (r, i) => {
+                try {
+                    const opts = {
+                        method: r.method,
+                        credentials: 'include',
+                        headers: {}
+                    };
+
+                    if (
+                        r.body !== null &&
+                        r.body !== undefined
+                    ) {
+                        opts.headers['Content-Type'] =
+                            'application/json';
+
+                        opts.body =
+                            JSON.stringify(r.body);
+                    }
+
+                    const res = await fetch(
+                        r.path,
+                        opts
+                    );
+
+                    let data = null;
+
+                    try {
+                        data = await res.json();
+                    } catch (e) {}
+
+                    out[i] = {
+                        status: res.status,
+                        data: data
+                    };
+
+                } catch (e) {
+                    out[i] = {
+                        status: 0,
+                        data: null,
+                        error: String(e)
+                    };
+                }
+            })
+        );
+
+        return out;
+    }
+    """
+
+    def fetch_many(self, reqs):
+        """يرسل قائمة طلبات متوازية ويعيد النتائج بنفس الترتيب."""
+
+        if not reqs:
+            return []
+
+        return self.page.evaluate(
+            self._FETCH_JS,
+            reqs,
+        )
+
+    # -------------------------------------------------------------- discovery
+
+    def _section_from_course(self):
+        me = self.api_get_json(
+            "/api/study/students/me",
+            {},
+        ) or {}
+
+        code = me.get("course_code")
+
+        if not code:
             return None
 
-        return dict(job)
+        course = self.api_get_json(
+            f"/api/study/courses/{code}",
+            {},
+        ) or {}
 
+        basic = course.get("basic_section") or {}
 
-def finish_job(
-    request_id: str,
-    status: str,
-    *,
-    results: list[dict[str, Any]] | None = None,
-    error: str | None = None,
-) -> None:
-    now = utc_now()
+        return basic.get("id")
 
-    with jobs_lock:
-        job = jobs.get(request_id)
+    def resolve_section_id(self):
+        deadline = time.time() + 120
 
-        if not job:
+        while time.time() < deadline:
+            sid = self._section_from_course()
+
+            if sid:
+                return sid
+
+            m = re.search(
+                r"/section/(\d+)",
+                self.page.url,
+            )
+
+            if m:
+                return int(m.group(1))
+
+            m = re.search(
+                r"/chapter/(\d+)",
+                self.page.url,
+            )
+
+            if m:
+                data = self.api_get_json(
+                    f"/api/study/chapters/{m.group(1)}"
+                )
+
+                if data and data.get("section"):
+                    return data["section"]["id"]
+
+            time.sleep(1)
+
+        raise RuntimeError(
+            "تعذّر تحديد القسم الحالي."
+        )
+
+    # --------------------------------------------------------------- lectures
+
+    def complete_lecture(self, lid):
+        self._req(
+            "PUT",
+            f"/api/study/students/lectures/{lid}",
+        )
+
+        r = self._req(
+            "PUT",
+            f"/api/study/students/lectures/{lid}/complete",
+        )
+
+        return r.status == 200
+
+    def complete_chapter_lectures(
+        self,
+        cid,
+        chapter=None,
+        progress=None,
+    ):
+        if progress is None:
+            progress = self.api_get_json(
+                f"/api/study/students/chapters/{cid}/lectures",
+                [],
+            ) or []
+
+        if chapter is None:
+            chapter = self.api_get_json(
+                f"/api/study/chapters/{cid}",
+                {},
+            ) or {}
+
+        done = {
+            p.get("lecture_id")
+            for p in progress
+            if p.get("completed_at")
+        }
+
+        todo = [
+            lec
+            for lec in chapter.get("lectures", [])
+            if lec["id"] not in done
+        ]
+
+        if not todo:
             return
 
-        job["status"] = status
-        job["updated_at"] = now
-        job["completed_at"] = now
+        # المحاضرات لها ترتيب إجباري على السيرفر.
+        for lec in todo:
+            if stop_requested():
+                raise RuntimeError(
+                    "تم إيقاف التشغيل بواسطة المستخدم"
+                )
 
-        if results is not None:
-            job["results"] = results
+            self._req(
+                "PUT",
+                f"/api/study/students/lectures/{lec['id']}",
+                {},
+            )
 
-        job["error"] = error
+            r = self._req(
+                "PUT",
+                f"/api/study/students/lectures/{lec['id']}/complete",
+                {},
+            )
 
+            if r.status == 200:
+                print(
+                    f"   📗 محاضرة {lec.get('seq')}: "
+                    f"{lec.get('title', '')} — تم",
+                    flush=True,
+                )
 
-def should_stop(request_id: str) -> bool:
-    with jobs_lock:
-        event = stop_events.get(request_id)
+            else:
+                print(
+                    f"   ⚠️ تعذّر إكمال المحاضرة "
+                    f"{lec['id']} ({r.status})",
+                    flush=True,
+                )
 
-    return event.is_set() if event else False
+    # ------------------------------------------------------------------ tests
 
+    def _start_test(self, cid):
+        return self._req(
+            "PUT",
+            f"/api/study/students/chapters/{cid}/test",
+        ).status
 
-def cleanup_old_jobs() -> None:
-    cutoff = time.time() - JOB_TTL_SECONDS
+    def _result_path(self, cid, test_type):
+        if test_type == "test":
+            return (
+                f"/api/study/students/chapters/"
+                f"{cid}/test/result"
+            )
 
-    with jobs_lock:
-        remove_ids: list[str] = []
+        return (
+            f"/api/study/students/chapters/"
+            f"{cid}/review/result"
+        )
 
-        for request_id, job in jobs.items():
-            created_at = job.get("created_at")
+    def _answer_base(self, test_type):
+        if test_type == "test":
+            return "test-questions"
 
-            if not created_at:
+        return "review-questions"
+
+    @staticmethod
+    def _extract_key(result):
+        key = {}
+
+        for cr in (
+            result or {}
+        ).get("choice_results", []) or []:
+
+            qid = cr.get("question_id")
+
+            correct = [
+                c["choice"]["id"]
+                for c in (cr.get("choices") or [])
+                if c.get("correct")
+            ]
+
+            if qid and correct:
+                key[qid] = (
+                    "choice",
+                    correct[0],
+                )
+
+        for dr in (
+            result or {}
+        ).get("description_results", []) or []:
+
+            qid = dr.get("question_id")
+
+            if (
+                qid
+                and dr.get("model_answer") is not None
+            ):
+                key[qid] = (
+                    "description",
+                    dr["model_answer"],
+                )
+
+        return key
+
+    # ------------------------------------------------------------ answer bank
+
+    def _load_answers(self):
+        try:
+            with open(
+                ANSWER_FILE,
+                encoding="utf-8",
+            ) as f:
+                return json.load(f)
+
+        except Exception:
+            return {}
+
+    def _save_answers(self):
+        with open(
+            ANSWER_FILE,
+            "w",
+            encoding="utf-8",
+        ) as f:
+            json.dump(
+                self.answers,
+                f,
+                ensure_ascii=False,
+                indent=1,
+            )
+
+    def _stored_key(self, cid):
+        """الإجابات المحفوظة لفصل معيّن."""
+
+        raw = self.answers.get(
+            str(cid),
+            {},
+        )
+
+        return {
+            int(q): (
+                v[0],
+                v[1],
+            )
+            for q, v in raw.items()
+        }
+
+    def _save_key(self, cid, key):
+        if not key:
+            return
+
+        merged = self.answers.get(
+            str(cid),
+            {},
+        )
+
+        merged.update(
+            {
+                str(q): [k, v]
+                for q, (k, v) in key.items()
+            }
+        )
+
+        self.answers[str(cid)] = merged
+
+        self._save_answers()
+
+    def _bank_covers(self, ch):
+        """هل بنك الإجابات يغطي كل أسئلة الفصل؟"""
+
+        qc = ch.get(
+            "question_count",
+            0,
+        )
+
+        return (
+            bool(qc)
+            and len(
+                self.answers.get(
+                    str(ch["id"]),
+                    {},
+                )
+            ) >= qc
+        )
+
+    def _harvest_chapter(self, cid):
+        """
+        يقرأ نتيجة محاولة سابقة لفصل واحد
+        ويحدّث البنك.
+        """
+
+        key = {}
+
+        for path in (
+            f"/api/study/students/chapters/{cid}/review/result",
+            f"/api/study/students/chapters/{cid}/test/result",
+        ):
+            data = self.api_get_json(
+                path,
+                None,
+            )
+
+            if not isinstance(data, dict):
                 continue
 
-            try:
-                created_timestamp = datetime.fromisoformat(
-                    created_at
-                ).timestamp()
-            except Exception:
+            if isinstance(
+                data.get("result"),
+                dict,
+            ):
+                data = data["result"]
+
+            key.update(
+                self._extract_key(data)
+            )
+
+        if key:
+            self._save_key(
+                cid,
+                key,
+            )
+
+        return len(key)
+
+    def harvest_course(self):
+        """
+        يحدّث البنك من نتائج المحاولات السابقة،
+        للفصول غير المغطاة فقط.
+        """
+
+        section_id = self.resolve_section_id()
+
+        section = self.api_get_json(
+            f"/api/study/sections/{section_id}",
+            {},
+        ) or {}
+
+        progress = self.api_get_json(
+            f"/api/study/students/sections/"
+            f"{section_id}/chapters",
+            [],
+        ) or []
+
+        pmap = {
+            p.get("chapter_id"): p
+            for p in progress
+        }
+
+        found = 0
+
+        for ch in section.get(
+            "chapters",
+            [],
+        ):
+            if self._bank_covers(ch):
                 continue
 
-            if created_timestamp < cutoff:
-                remove_ids.append(request_id)
+            if (
+                pmap.get(
+                    ch["id"],
+                    {},
+                ) or {}
+            ).get(
+                "best_correct_count",
+                0,
+            ) <= 0:
+                continue
 
-        for request_id in remove_ids:
-            jobs.pop(request_id, None)
-            stop_events.pop(request_id, None)
-
-
-# ============================================================
-# Safe error formatting
-# ============================================================
-
-def safe_error_message(exc: BaseException) -> str:
-    """
-    Return a useful runtime error without exposing credentials,
-    stack traces, or huge internal payloads.
-    """
-
-    message = str(exc).strip()
-
-    if not message:
-        message = exc.__class__.__name__
-
-    # Never return an enormous exception body to the client.
-    message = message[:1000]
-
-    # Basic credential redaction.
-    lowered = message.lower()
-
-    sensitive_words = (
-        "password=",
-        "password:",
-        "passwd=",
-        "token=",
-        "authorization=",
-        "bearer ",
-    )
-
-    if any(word in lowered for word in sensitive_words):
-        return "Tool execution failed. Check the Railway logs for details."
-
-    return message
-
-
-# ============================================================
-# SPRIX
-# ============================================================
-
-def _run_sprix(
-    request_id: str,
-    accounts: list[Account],
-    subject_id: str,
-) -> None:
-    update_job(
-        request_id,
-        status="in_progress",
-    )
-
-    results: list[dict[str, Any]] = []
-
-    try:
-        for account in accounts:
-            if should_stop(request_id):
-                finish_job(
-                    request_id,
-                    "stopped",
-                    results=results,
-                )
-                return
-
-            try:
-                solver = SprixSolver(
-                    student_id=account.code,
-                    password=account.password,
-                )
-
-                result = solver.run(
-                    subject_id=subject_id,
-                )
-
-                results.append(
-                    {
-                        "code": account.code,
-                        "success": True,
-                        "result": result,
-                    }
-                )
-
-            except Exception as exc:
-                logger.exception(
-                    "SPRIX account execution failed "
-                    "request_id=%s code=%s",
-                    request_id,
-                    account.code,
-                )
-
-                results.append(
-                    {
-                        "code": account.code,
-                        "success": False,
-                        "error": safe_error_message(exc),
-                    }
-                )
-
-        has_errors = any(
-            item.get("success") is False
-            for item in results
-        )
-
-        if should_stop(request_id):
-            finish_job(
-                request_id,
-                "stopped",
-                results=results,
+            found += self._harvest_chapter(
+                ch["id"]
             )
-            return
 
-        finish_job(
-            request_id,
-            "completed_with_errors" if has_errors else "completed",
-            results=results,
+        print(
+            f"🗄️ بنك الإجابات: تم تحديث "
+            f"{found} إجابة.",
+            flush=True,
         )
 
-    except Exception as exc:
-        logger.exception(
-            "SPRIX job failed request_id=%s",
-            request_id,
+    def _answer_q(
+        self,
+        base,
+        qid,
+        kind,
+        payload,
+    ):
+        return self._req(
+            "PUT",
+            f"/api/study/students/{base}/{qid}/answer/{kind}",
+            payload,
         )
 
-        finish_job(
-            request_id,
-            "failed",
-            results=results,
-            error=safe_error_message(exc),
-        )
+    def _submit_attempt(
+        self,
+        cid,
+        questions,
+        base,
+        result_path,
+        key,
+    ):
+        """
+        يبدأ محاولة جديدة ويرسل الإجابات بالترتيب.
+        """
 
+        self._start_test(cid)
 
-# ============================================================
-# QUREO
-# ============================================================
+        for item in questions:
+            qid = item["question"]["id"]
 
-def _run_qureo(
-    request_id: str,
-    accounts: list[Account],
-    courses: list[str],
-) -> None:
-    update_job(
-        request_id,
-        status="in_progress",
-    )
+            if item.get("choices"):
+                val = key.get(
+                    qid,
+                    (
+                        "choice",
+                        item["choices"][0]["id"],
+                    ),
+                )[1]
 
-    results: list[dict[str, Any]] = []
-
-    try:
-        for account in accounts:
-            if should_stop(request_id):
-                finish_job(
-                    request_id,
-                    "stopped",
-                    results=results,
-                )
-                return
-
-            solver: QureoSolver | None = None
-
-            try:
-                logger.info(
-                    "Starting Qureo solver "
-                    "request_id=%s code=%s courses=%s",
-                    request_id,
-                    account.code,
-                    courses,
-                )
-
-                solver = QureoSolver(
-                    courses=courses,
-                )
-
-                result = solver.run(
-                    student_id=account.code,
-                    password=account.password,
-                    courses=courses,
-                )
-
-                results.append(
+                self._answer_q(
+                    base,
+                    qid,
+                    "choice",
                     {
-                        "code": account.code,
-                        "success": True,
-                        "result": result,
-                    }
+                        "choice_id": val
+                    },
                 )
 
-                logger.info(
-                    "Qureo solver completed "
-                    "request_id=%s code=%s",
-                    request_id,
-                    account.code,
-                )
+            else:
+                val = key.get(
+                    qid,
+                    (
+                        "description",
+                        "print(1)",
+                    ),
+                )[1]
 
-            except Exception as exc:
-                error_message = safe_error_message(exc)
-
-                logger.exception(
-                    "Qureo execution failed "
-                    "request_id=%s code=%s error=%s",
-                    request_id,
-                    account.code,
-                    error_message,
-                )
-
-                # IMPORTANT:
-                # Return the actual safe exception message to the WISO UI.
-                results.append(
+                self._answer_q(
+                    base,
+                    qid,
+                    "description",
                     {
-                        "code": account.code,
-                        "success": False,
-                        "error": error_message,
-                    }
+                        "answer_code": val
+                    },
                 )
 
-            finally:
-                # The solver normally owns its cleanup through run().
-                # This block is intentionally defensive in case run()
-                # fails before reaching its own cleanup.
-                if solver is not None:
-                    browser = getattr(solver, "browser", None)
-                    playwright = getattr(solver, "playwright", None)
+        result = self.api_get_json(
+            result_path,
+            {},
+        ) or {}
 
-                    if browser is not None:
-                        try:
-                            browser.close()
-                        except Exception:
-                            logger.debug(
-                                "Qureo browser cleanup failed",
-                                exc_info=True,
-                            )
+        if isinstance(
+            result.get("result"),
+            dict,
+        ):
+            result = result["result"]
 
-                    if playwright is not None:
-                        try:
-                            playwright.stop()
-                        except Exception:
-                            logger.debug(
-                                "Qureo Playwright cleanup failed",
-                                exc_info=True,
-                            )
+        return result
 
-        if should_stop(request_id):
-            finish_job(
-                request_id,
-                "stopped",
-                results=results,
-            )
-            return
+    def solve_test(
+        self,
+        cid,
+        test_type="review",
+    ):
+        questions = self.api_get_json(
+            f"/api/study/chapters/{cid}/test",
+            [],
+        ) or []
 
-        has_errors = any(
-            item.get("success") is False
-            for item in results
+        if not questions:
+            return {
+                "ok": False,
+                "reason": "لا توجد أسئلة",
+            }
+
+        base = self._answer_base(
+            test_type
         )
 
-        if has_errors:
-            finish_job(
-                request_id,
-                "completed_with_errors",
-                results=results,
-            )
+        result_path = self._result_path(
+            cid,
+            test_type,
+        )
+
+        total = len(questions)
+
+        key = self._stored_key(cid)
+
+        cached_complete = all(
+            item["question"]["id"] in key
+            for item in questions
+        )
+
+        result = self._submit_attempt(
+            cid,
+            questions,
+            base,
+            result_path,
+            key,
+        )
+
+        last_correct = result.get(
+            "correct_count",
+            0,
+        )
+
+        key.update(
+            self._extract_key(result)
+        )
+
+        self._save_key(
+            cid,
+            key,
+        )
+
+        if cached_complete:
+            if last_correct >= total:
+                print(
+                    f"      💎 محاولة أولى كاملة: "
+                    f"{last_correct}/{total}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"      ⚠️ البنك غير مطابق — "
+                    f"محاولة 1: "
+                    f"{last_correct}/{total}",
+                    flush=True,
+                )
+
         else:
-            finish_job(
-                request_id,
-                "completed",
-                results=results,
+            print(
+                f"      🔁 محاولة 1: "
+                f"{last_correct}/{total}",
+                flush=True,
             )
 
-    except Exception as exc:
-        logger.exception(
-            "Qureo job failed request_id=%s",
-            request_id,
-        )
+        attempt = 1
 
-        finish_job(
-            request_id,
-            "failed",
-            results=results,
-            error=safe_error_message(exc),
-        )
+        while (
+            last_correct < total
+            and attempt < 3
+        ):
+            if stop_requested():
+                raise RuntimeError(
+                    "تم إيقاف التشغيل بواسطة المستخدم"
+                )
 
+            attempt += 1
 
-# ============================================================
-# Health
-# ============================================================
+            time.sleep(0.3)
 
-@app.get("/health")
-def health() -> dict[str, Any]:
-    cleanup_old_jobs()
+            result = self._submit_attempt(
+                cid,
+                questions,
+                base,
+                result_path,
+                key,
+            )
 
-    return {
-        "status": "ok",
-        "service": "wiso-tools-platform",
-        "timestamp": utc_now(),
-    }
+            last_correct = result.get(
+                "correct_count",
+                0,
+            )
 
+            key.update(
+                self._extract_key(result)
+            )
 
-@app.get("/health/tools")
-def health_tools() -> dict[str, Any]:
-    return {
-        "status": "ok",
-        "tools": {
-            "sprix": True,
-            "qureo": True,
-        },
-        "timestamp": utc_now(),
-    }
+            self._save_key(
+                cid,
+                key,
+            )
 
-
-# ============================================================
-# SPRIX Subjects
-# ============================================================
-
-@app.post("/api/tools/sprix/subjects")
-def sprix_subjects(payload: SubjectsRequest) -> dict[str, Any]:
-    try:
-        solver = SprixSolver(
-            student_id=payload.code,
-            password=payload.password,
-        )
-
-        subjects = solver.get_subjects()
+            print(
+                f"      🔁 محاولة {attempt}: "
+                f"{last_correct}/{total}",
+                flush=True,
+            )
 
         return {
-            "success": True,
-            "subjects": subjects,
+            "ok": True,
+            "correct": last_correct,
+            "total": total,
+            "perfect": last_correct >= total,
         }
 
-    except Exception as exc:
-        logger.exception(
-            "SPRIX subjects request failed code=%s",
-            payload.code,
+    # ----------------------------------------------------------------- course
+
+    def solve_course(self):
+        section_id = self.resolve_section_id()
+
+        section = self.api_get_json(
+            f"/api/study/sections/{section_id}",
+            {},
+        ) or {}
+
+        chapters = section.get(
+            "chapters",
+            [],
         )
 
-        raise HTTPException(
-            status_code=500,
-            detail=safe_error_message(exc),
-        ) from exc
+        progress = self.api_get_json(
+            f"/api/study/students/sections/"
+            f"{section_id}/chapters",
+            [],
+        ) or []
 
-
-# ============================================================
-# Start SPRIX
-# ============================================================
-
-@app.post("/api/tools/sprix/solve")
-def sprix_solve(payload: SprixSolveRequest) -> dict[str, Any]:
-    cleanup_old_jobs()
-
-    request_id = create_job("sprix")
-
-    executor.submit(
-        _run_sprix,
-        request_id,
-        payload.accounts,
-        payload.subject_id,
-    )
-
-    return {
-        "request_id": request_id,
-        "status": "queued",
-        "tool": "sprix",
-    }
-
-
-# ============================================================
-# Start Qureo
-# ============================================================
-
-@app.post("/api/tools/qureo/solve")
-def qureo_solve(payload: QureoSolveRequest) -> dict[str, Any]:
-    cleanup_old_jobs()
-
-    request_id = create_job("qureo")
-
-    courses = payload.courses or [
-        "Python",
-        "JavaScript",
-    ]
-
-    executor.submit(
-        _run_qureo,
-        request_id,
-        payload.accounts,
-        courses,
-    )
-
-    return {
-        "request_id": request_id,
-        "status": "queued",
-        "tool": "qureo",
-    }
-
-
-# ============================================================
-# Job status
-# ============================================================
-
-@app.get("/api/jobs/{request_id}")
-def job_status(request_id: str) -> dict[str, Any]:
-    cleanup_old_jobs()
-
-    job = get_job(request_id)
-
-    if job is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Job not found.",
-        )
-
-    return job
-
-
-# ============================================================
-# Stop job
-# ============================================================
-
-@app.post("/api/jobs/{request_id}/stop")
-def stop_job(request_id: str) -> dict[str, Any]:
-    cleanup_old_jobs()
-
-    with jobs_lock:
-        job = jobs.get(request_id)
-        event = stop_events.get(request_id)
-
-    if job is None or event is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Job not found.",
-        )
-
-    if job["status"] in TERMINAL_STATUSES:
-        return {
-            "success": True,
-            "request_id": request_id,
-            "status": job["status"],
+        pmap = {
+            p.get("chapter_id"): p
+            for p in progress
         }
 
-    event.set()
+        print(
+            f"📚 القسم الحالي: {section_id} "
+            f"— عدد الفصول: {len(chapters)}\n",
+            flush=True,
+        )
 
-    update_job(
-        request_id,
-        status="stopping",
-    )
+        # نجيب بيانات الفصول الناقصة
+        # (محاضرات + تقدم المحاضرات)
+        # دفعة واحدة متوازية.
+        todo = [
+            ch
+            for ch in chapters
+            if not (
+                ch.get("question_count")
+                and pmap.get(
+                    ch["id"],
+                    {},
+                ).get(
+                    "best_correct_count",
+                    0,
+                )
+                >= ch.get(
+                    "question_count"
+                )
+            )
+        ]
 
-    return {
-        "success": True,
-        "request_id": request_id,
-        "status": "stopping",
-    }
+        detail_map = {}
+        lec_map = {}
+
+        if todo:
+            details = self.fetch_many(
+                [
+                    {
+                        "method": "GET",
+                        "path": (
+                            f"/api/study/chapters/"
+                            f"{ch['id']}"
+                        ),
+                    }
+                    for ch in todo
+                ]
+            )
+
+            lec_prog = self.fetch_many(
+                [
+                    {
+                        "method": "GET",
+                        "path": (
+                            f"/api/study/students/"
+                            f"chapters/{ch['id']}/lectures"
+                        ),
+                    }
+                    for ch in todo
+                ]
+            )
+
+            for i, ch in enumerate(todo):
+                detail_map[ch["id"]] = (
+                    details[i] or {}
+                ).get(
+                    "data"
+                ) or None
+
+                lec_map[ch["id"]] = (
+                    lec_prog[i] or {}
+                ).get(
+                    "data"
+                ) or None
+
+        solved = []
+
+        total_ch = len(chapters)
+
+        emit_progress(
+            self.current_course,
+            0,
+            total_ch,
+            "",
+        )
+
+        for i, ch in enumerate(chapters):
+            if stop_requested():
+                raise RuntimeError(
+                    "تم إيقاف التشغيل بواسطة المستخدم"
+                )
+
+            cid = ch["id"]
+
+            name = ch.get(
+                "name",
+                "",
+            )
+
+            qcount = ch.get(
+                "question_count",
+                0,
+            )
+
+            test_type = ch.get(
+                "test_type",
+                "review",
+            )
+
+            emit_progress(
+                self.current_course,
+                i,
+                total_ch,
+                name,
+            )
+
+            print(
+                f"▶️ الفصل {ch.get('seq')}: "
+                f"{name} ({cid}) — "
+                f"أسئلة: {qcount} "
+                f"[{test_type}]",
+                flush=True,
+            )
+
+            if (
+                qcount
+                and pmap.get(
+                    cid,
+                    {},
+                ).get(
+                    "best_correct_count",
+                    0,
+                ) >= qcount
+            ):
+                print(
+                    "   ✅ مُكتمل بالفعل — تخطّي",
+                    flush=True,
+                )
+
+                solved.append(
+                    (
+                        name,
+                        qcount,
+                        qcount,
+                    )
+                )
+
+                print(
+                    "",
+                    flush=True,
+                )
+
+                continue
+
+            # لو البنك لا يغطي الفصل وعنده محاولة سابقة،
+            # نستخرج إجاباته.
+            if (
+                not self._bank_covers(ch)
+                and pmap.get(
+                    cid,
+                    {},
+                ).get(
+                    "best_correct_count",
+                    0,
+                ) > 0
+            ):
+                self._harvest_chapter(cid)
+
+            self.complete_chapter_lectures(
+                cid,
+                detail_map.get(cid),
+                lec_map.get(cid),
+            )
+
+            if qcount:
+                res = self.solve_test(
+                    cid,
+                    test_type,
+                )
+
+                if res.get("ok"):
+                    mark = (
+                        "💎"
+                        if res["perfect"]
+                        else "✔️"
+                    )
+
+                    print(
+                        f"   {mark} الاختبار: "
+                        f"{res['correct']}/"
+                        f"{res['total']}",
+                        flush=True,
+                    )
+
+                    solved.append(
+                        (
+                            name,
+                            res["correct"],
+                            res["total"],
+                        )
+                    )
+
+                else:
+                    print(
+                        f"   ⏭️ تخطّي الاختبار: "
+                        f"{res.get('reason')}",
+                        flush=True,
+                    )
+
+            else:
+                print(
+                    "   ℹ️ لا يوجد اختبار لهذا الفصل",
+                    flush=True,
+                )
+
+            print(
+                "",
+                flush=True,
+            )
+
+        emit_progress(
+            self.current_course,
+            total_ch,
+            total_ch,
+            "تم",
+        )
+
+        return solved
+
+    # ------------------------------------------------------------------ main
+
+    def run(
+        self,
+        student_id=None,
+        password=None,
+        courses=None,
+        close_pause=5,
+    ):
+        if courses:
+            self.courses = courses
+
+        self.start()
+
+        try:
+            self.login(
+                student_id,
+                password,
+            )
+
+            for name in self.courses:
+                print(
+                    "\n" + "=" * 60,
+                    flush=True,
+                )
+
+                self.enter_course(name)
+
+                self.current_course = name
+
+                solved = self.solve_course()
+
+                perfect = sum(
+                    1
+                    for _, c, t in solved
+                    if t and c == t
+                )
+
+                print(
+                    "=" * 60,
+                    flush=True,
+                )
+
+                print(
+                    f"✨ اكتمل مسار {name}! "
+                    f"الفصول المنجزة: {len(solved)} "
+                    f"(كاملة: {perfect})",
+                    flush=True,
+                )
+
+                print(
+                    "=" * 60,
+                    flush=True,
+                )
+
+        finally:
+            if self.browser is not None:
+                if close_pause:
+                    print(
+                        f"\n🖐️ سيتم إغلاق المتصفح "
+                        f"خلال {close_pause} ثوانٍ...",
+                        flush=True,
+                    )
+
+                    time.sleep(close_pause)
+
+                self.browser.close()
+
+            if self.playwright is not None:
+                self.playwright.stop()
 
 
-# ============================================================
-# Cleanup on shutdown
-# ============================================================
-
-@app.on_event("shutdown")
-def shutdown_event() -> None:
-    logger.info("Shutting down tools platform.")
-
-    executor.shutdown(
-        wait=False,
-        cancel_futures=True,
-    )
+if __name__ == "__main__":
+    QureoSolver(
+        headless=False
+    ).run()
