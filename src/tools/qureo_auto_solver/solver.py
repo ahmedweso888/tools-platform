@@ -66,10 +66,7 @@ COURSES = [
 # OPTIONAL HOOKS
 # ============================================================
 
-# دالة(course, done, total, label)
 PROGRESS = None
-
-# دالة() -> bool
 SHOULD_STOP = None
 
 
@@ -149,7 +146,6 @@ class QureoSolver:
 
         last_error = None
 
-        # نحاول Chrome / Edge لو موجودين.
         for channel in (
             "chrome",
             "msedge",
@@ -172,7 +168,6 @@ class QureoSolver:
             except Exception as exc:
                 last_error = exc
 
-        # Railway غالبًا لا يحتوي Chrome/Edge.
         if self.browser is None:
             try:
                 self.browser = (
@@ -249,13 +244,16 @@ class QureoSolver:
             flush=True,
         )
 
+        # ----------------------------------------------------
+        # فتح صفحة الدخول
+        # ----------------------------------------------------
+
         self.page.goto(
             PORTAL_URL,
             wait_until="domcontentloaded",
             timeout=60000,
         )
 
-        # ننتظر تحميل JavaScript إن أمكن.
         try:
             self.page.wait_for_load_state(
                 "networkidle",
@@ -264,167 +262,187 @@ class QureoSolver:
         except Exception:
             pass
 
+        print(
+            f"🌐 صفحة الدخول: {self.page.url}",
+            flush=True,
+        )
+
         # ----------------------------------------------------
-        # لو نموذج الدخول ظاهر بالفعل لا نضغط أي شيء.
+        # الزر الإجباري لاختيار حساب الطالب
+        # ----------------------------------------------------
+
+        secondary_selector = (
+            ".portal-selection-button-secondary"
+        )
+
+        try:
+            secondary = self.page.locator(
+                secondary_selector
+            ).first
+
+            secondary.wait_for(
+                state="visible",
+                timeout=20000,
+            )
+
+        except Exception as exc:
+
+            current_url = self.page.url
+
+            try:
+                title = self.page.title()
+            except Exception:
+                title = ""
+
+            try:
+                body = (
+                    self.page.locator(
+                        "body"
+                    ).inner_text(
+                        timeout=5000
+                    )
+                )
+
+                body = re.sub(
+                    r"\s+",
+                    " ",
+                    body,
+                ).strip()
+
+                if len(body) > 1500:
+                    body = body[:1500]
+
+            except Exception:
+                body = ""
+
+            raise RuntimeError(
+                "زر اختيار حساب الطالب "
+                "لم يظهر في Qureo. "
+                f"SELECTOR={secondary_selector} | "
+                f"URL={current_url} | "
+                f"TITLE={title} | "
+                f"PAGE={body}"
+            ) from exc
+
+        print(
+            "🖱️ جاري الضغط على زر اختيار حساب الطالب...",
+            flush=True,
+        )
+
+        try:
+            secondary.scroll_into_view_if_needed(
+                timeout=10000
+            )
+        except Exception:
+            pass
+
+        try:
+            secondary.click(
+                timeout=15000,
+                force=True,
+            )
+
+        except Exception as exc:
+
+            raise RuntimeError(
+                "تعذّر الضغط على "
+                ".portal-selection-button-secondary "
+                "في Qureo."
+            ) from exc
+
+        print(
+            "✅ تم الضغط على زر اختيار حساب الطالب.",
+            flush=True,
+        )
+
+        # ----------------------------------------------------
+        # إعطاء Qureo فرصة لتنفيذ JavaScript
+        # وتغيير الصفحة/إظهار نموذج الدخول
+        # ----------------------------------------------------
+
+        self.page.wait_for_timeout(1500)
+
+        try:
+            self.page.wait_for_load_state(
+                "domcontentloaded",
+                timeout=10000,
+            )
+        except Exception:
+            pass
+
+        try:
+            self.page.wait_for_load_state(
+                "networkidle",
+                timeout=10000,
+            )
+        except Exception:
+            pass
+
+        print(
+            f"📄 بعد اختيار الحساب: {self.page.url}",
+            flush=True,
+        )
+
+        # ----------------------------------------------------
+        # انتظار نموذج تسجيل الدخول
         # ----------------------------------------------------
 
         student = self.page.locator(
             "#student_id"
         )
 
-        if not student.is_visible(
-            timeout=5000
-        ):
-            # ------------------------------------------------
-            # محاولة زر اختيار الحساب القديم.
-            # ------------------------------------------------
+        try:
+            student.wait_for(
+                state="visible",
+                timeout=30000,
+            )
 
-            selectors = [
-                ".portal-selection-button-secondary",
-                "button.portal-selection-button-secondary",
-                "[class*='portal-selection-button']",
-            ]
+        except Exception as exc:
 
-            clicked = False
-
-            for selector in selectors:
-                try:
-                    locator = self.page.locator(
-                        selector
-                    ).first
-
-                    if locator.count() <= 0:
-                        continue
-
-                    if not locator.is_visible(
-                        timeout=2000
-                    ):
-                        continue
-
-                    print(
-                        "🖱️ جاري اختيار حساب الطالب...",
-                        flush=True,
-                    )
-
-                    locator.click(
-                        timeout=10000
-                    )
-
-                    clicked = True
-                    break
-
-                except Exception:
-                    continue
-
-            # ------------------------------------------------
-            # ننتظر ظهور نموذج الدخول.
-            # ------------------------------------------------
+            current_url = self.page.url
 
             try:
-                self.page.wait_for_selector(
-                    "#student_id",
-                    state="visible",
-                    timeout=15000,
+                title = self.page.title()
+            except Exception:
+                title = ""
+
+            try:
+                body = (
+                    self.page.locator(
+                        "body"
+                    ).inner_text(
+                        timeout=5000
+                    )
                 )
 
-            except Exception as exc:
+                body = re.sub(
+                    r"\s+",
+                    " ",
+                    body,
+                ).strip()
 
-                # أحيانًا Qureo يحتاج الضغط على زر
-                # يحتوي نصًا بدل الـ class القديم.
+                if len(body) > 2000:
+                    body = body[:2000]
 
-                text_selectors = [
-                    "text=Student",
-                    "text=Student Login",
-                    "text=Student account",
-                    "text=طالب",
-                    "text=تسجيل الدخول",
-                ]
+            except Exception:
+                body = ""
 
-                for selector in text_selectors:
-                    try:
-                        locator = self.page.locator(
-                            selector
-                        ).first
+            raise RuntimeError(
+                "تم الضغط على زر اختيار حساب الطالب "
+                "لكن نموذج تسجيل الدخول لم يظهر. "
+                f"URL={current_url} | "
+                f"TITLE={title} | "
+                f"PAGE={body}"
+            ) from exc
 
-                        if locator.count() <= 0:
-                            continue
-
-                        if not locator.is_visible(
-                            timeout=1000
-                        ):
-                            continue
-
-                        locator.click(
-                            timeout=5000
-                        )
-
-                        break
-
-                    except Exception:
-                        continue
-
-                try:
-                    self.page.wait_for_selector(
-                        "#student_id",
-                        state="visible",
-                        timeout=10000,
-                    )
-
-                except Exception as final_exc:
-
-                    # ------------------------------------------------
-                    # تشخيص الصفحة الحقيقي.
-                    # ------------------------------------------------
-
-                    current_url = self.page.url
-
-                    try:
-                        title = self.page.title()
-                    except Exception:
-                        title = ""
-
-                    try:
-                        body = (
-                            self.page.locator(
-                                "body"
-                            ).inner_text(
-                                timeout=5000
-                            )
-                        )
-
-                        body = re.sub(
-                            r"\s+",
-                            " ",
-                            body,
-                        ).strip()
-
-                        if len(body) > 1500:
-                            body = body[:1500]
-
-                    except Exception:
-                        body = ""
-
-                    raise RuntimeError(
-                        "لم يظهر نموذج تسجيل الدخول في Qureo. "
-                        f"URL={current_url} | "
-                        f"TITLE={title} | "
-                        f"PAGE={body}"
-                    ) from final_exc
+        print(
+            "✅ ظهر نموذج تسجيل الدخول.",
+            flush=True,
+        )
 
         # ====================================================
         # FILL CREDENTIALS
         # ====================================================
-
-        student = self.page.locator(
-            "#student_id"
-        )
-
-        if not student.is_visible(
-            timeout=5000
-        ):
-            raise RuntimeError(
-                "حقل اسم المستخدم #student_id غير ظاهر."
-            )
 
         student.fill(
             student_id
@@ -434,15 +452,18 @@ class QureoSolver:
             "#password"
         )
 
-        if not password_input.is_visible(
-            timeout=5000
-        ):
-            raise RuntimeError(
-                "حقل كلمة المرور #password غير ظاهر."
-            )
+        password_input.wait_for(
+            state="visible",
+            timeout=10000,
+        )
 
         password_input.fill(
             password
+        )
+
+        print(
+            "✍️ تم إدخال بيانات الحساب.",
+            flush=True,
         )
 
         # ====================================================
@@ -458,18 +479,16 @@ class QureoSolver:
         ]
 
         for selector in button_selectors:
+
             try:
                 candidate = self.page.locator(
                     selector
                 ).first
 
-                if candidate.count() <= 0:
-                    continue
-
-                if not candidate.is_visible(
-                    timeout=2000
-                ):
-                    continue
+                candidate.wait_for(
+                    state="visible",
+                    timeout=3000,
+                )
 
                 login_button = candidate
                 break
@@ -482,6 +501,11 @@ class QureoSolver:
                 "لم يتم العثور على زر تسجيل الدخول."
             )
 
+        print(
+            "🖱️ جاري الضغط على تسجيل الدخول...",
+            flush=True,
+        )
+
         login_button.click(
             timeout=15000
         )
@@ -492,8 +516,6 @@ class QureoSolver:
 
         success = False
 
-        # الحالة القديمة:
-        # نموذج الدخول يختفي.
         try:
             self.page.wait_for_selector(
                 "#student_id",
@@ -506,8 +528,8 @@ class QureoSolver:
         except Exception:
             pass
 
-        # بعض الإصدارات تخفي النموذج بدل حذفه.
         if not success:
+
             try:
                 if not self.page.locator(
                     "#student_id"
@@ -519,8 +541,8 @@ class QureoSolver:
             except Exception:
                 pass
 
-        # أو ينتقل الموقع لمسار مختلف.
         if not success:
+
             try:
                 current_url = (
                     self.page.url.lower()
@@ -536,12 +558,44 @@ class QureoSolver:
                 pass
 
         if not success:
+
+            current_url = self.page.url
+
+            try:
+                title = self.page.title()
+            except Exception:
+                title = ""
+
+            try:
+                body = (
+                    self.page.locator(
+                        "body"
+                    ).inner_text(
+                        timeout=5000
+                    )
+                )
+
+                body = re.sub(
+                    r"\s+",
+                    " ",
+                    body,
+                ).strip()
+
+                if len(body) > 2000:
+                    body = body[:2000]
+
+            except Exception:
+                body = ""
+
             raise RuntimeError(
                 "فشل تسجيل الدخول — "
-                "تأكد من اسم المستخدم وكلمة المرور."
+                "تأكد من اسم المستخدم وكلمة المرور. "
+                f"URL={current_url} | "
+                f"TITLE={title} | "
+                f"PAGE={body}"
             )
 
-        time.sleep(0.8)
+        time.sleep(1)
 
         print(
             "✅ تم تسجيل الدخول.",
@@ -1800,7 +1854,6 @@ class QureoSolver:
 
         finally:
 
-            # لا ننتظر 5 ثواني على Railway.
             if (
                 close_pause
                 and close_pause > 0
