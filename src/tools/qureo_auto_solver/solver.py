@@ -7,12 +7,23 @@ import time
 from playwright.sync_api import sync_playwright
 
 
+# ============================================================
+# UTF-8
+# ============================================================
+
 if sys.stdout.encoding != "utf-8":
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdout.reconfigure(
+            encoding="utf-8",
+            errors="replace",
+        )
     except Exception:
         pass
 
+
+# ============================================================
+# CONFIG
+# ============================================================
 
 PORTAL_URL = os.getenv(
     "QUREO_PORTAL_LOGIN_URL",
@@ -29,25 +40,53 @@ BASE = os.getenv(
     "https://me-tp.qureo.education",
 ).rstrip("/")
 
-JSON_HEADERS = {"Content-Type": "application/json"}
+JSON_HEADERS = {
+    "Content-Type": "application/json",
+}
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ANSWER_FILE = os.path.join(SCRIPT_DIR, "answers.json")
+SCRIPT_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
+
+ANSWER_FILE = os.path.join(
+    SCRIPT_DIR,
+    "answers.json",
+)
 
 STUDENT_ID = ""
 PASSWORD = ""
-COURSES = ["Python", "JavaScript"]
 
-# خطّافات اختيارية تستخدمها الواجهة:
-# التقدم + طلب الإيقاف
+COURSES = [
+    "Python",
+    "JavaScript",
+]
+
+
+# ============================================================
+# OPTIONAL HOOKS
+# ============================================================
+
+# دالة(course, done, total, label)
 PROGRESS = None
+
+# دالة() -> bool
 SHOULD_STOP = None
 
 
-def emit_progress(course, done, total, label=""):
+def emit_progress(
+    course,
+    done,
+    total,
+    label="",
+):
     if PROGRESS:
         try:
-            PROGRESS(course, done, total, label)
+            PROGRESS(
+                course,
+                done,
+                total,
+                label,
+            )
         except Exception:
             pass
 
@@ -55,40 +94,72 @@ def emit_progress(course, done, total, label=""):
 def stop_requested():
     if SHOULD_STOP:
         try:
-            return bool(SHOULD_STOP())
+            return bool(
+                SHOULD_STOP()
+            )
         except Exception:
             return False
+
     return False
 
 
+# ============================================================
+# SOLVER
+# ============================================================
+
 class QureoSolver:
-    def __init__(self, headless=False, courses=None):
+
+    def __init__(
+        self,
+        headless=False,
+        courses=None,
+    ):
         self.headless = headless
-        self.courses = courses or COURSES
+
+        self.courses = (
+            courses
+            if courses
+            else COURSES
+        )
 
         self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
 
-        self.answers = self._load_answers()
+        self.answers = (
+            self._load_answers()
+        )
+
         self.current_course = ""
 
-    # ------------------------------------------------------------------ setup
+    # ========================================================
+    # BROWSER
+    # ========================================================
 
     def start(self):
-        print("🚀 جاري تشغيل المتصفح...", flush=True)
+        print(
+            "🚀 جاري تشغيل المتصفح...",
+            flush=True,
+        )
 
-        self.playwright = sync_playwright().start()
+        self.playwright = (
+            sync_playwright().start()
+        )
 
-        last_err = None
+        last_error = None
 
-        # نحاول أولًا استخدام Chrome أو Edge المثبتين.
-        for channel in ("chrome", "msedge"):
+        # نحاول Chrome / Edge لو موجودين.
+        for channel in (
+            "chrome",
+            "msedge",
+        ):
             try:
-                self.browser = self.playwright.chromium.launch(
-                    headless=self.headless,
-                    channel=channel,
+                self.browser = (
+                    self.playwright.chromium.launch(
+                        headless=self.headless,
+                        channel=channel,
+                    )
                 )
 
                 print(
@@ -98,15 +169,16 @@ class QureoSolver:
 
                 break
 
-            except Exception as e:
-                last_err = e
+            except Exception as exc:
+                last_error = exc
 
-        # Railway غالبًا لا يحتوي Chrome أو Edge system browser.
-        # لذلك نستخدم Chromium الذي يوفّره Playwright.
+        # Railway غالبًا لا يحتوي Chrome/Edge.
         if self.browser is None:
             try:
-                self.browser = self.playwright.chromium.launch(
-                    headless=self.headless,
+                self.browser = (
+                    self.playwright.chromium.launch(
+                        headless=self.headless,
+                    )
                 )
 
                 print(
@@ -114,224 +186,373 @@ class QureoSolver:
                     flush=True,
                 )
 
-            except Exception as e:
-                last_err = e
+            except Exception as exc:
+                last_error = exc
 
                 raise RuntimeError(
-                    "تعذّر تشغيل المتصفح على Railway. "
-                    "تأكد من تثبيت Playwright Chromium "
-                    "عبر `playwright install chromium`."
-                ) from last_err
+                    "تعذّر تشغيل Chromium على Railway. "
+                    "تأكد من تثبيت Playwright Chromium."
+                ) from last_error
 
-        self.context = self.browser.new_context(
-            viewport={
-                "width": 1280,
-                "height": 800,
-            }
+        self.context = (
+            self.browser.new_context(
+                viewport={
+                    "width": 1280,
+                    "height": 800,
+                }
+            )
         )
 
-        self.page = self.context.new_page()
-
-
-def login(self, student_id=None, password=None):
-    """تسجيل الدخول إلى بوابة Qureo."""
-
-    student_id = student_id or STUDENT_ID
-    password = password or PASSWORD
-
-    if not student_id or not password:
-        raise RuntimeError(
-            "لازم تدخل اسم المستخدم وكلمة المرور."
+        self.page = (
+            self.context.new_page()
         )
 
-    print(
-        "🔑 جاري تسجيل الدخول تلقائيًا...",
-        flush=True,
-    )
-
-    self.page.goto(
-        PORTAL_URL,
-        wait_until="domcontentloaded",
-        timeout=60000,
-    )
-
-    # نعطي الصفحة وقتًا قصيرًا لتكمل أي JavaScript
-    # خاص بها قبل البحث عن عناصر الدخول.
-    try:
-        self.page.wait_for_load_state(
-            "networkidle",
-            timeout=15000,
+        self.page.set_default_timeout(
+            30000
         )
-    except Exception:
-        pass
 
-    # ---------------------------------------------------------
-    # 1) لو حقول الدخول ظاهرة بالفعل، لا نضغط اختيار الحساب.
-    # ---------------------------------------------------------
-    student_input = self.page.locator("#student_id")
+        self.page.set_default_navigation_timeout(
+            60000
+        )
 
-    if not student_input.is_visible(timeout=5000):
-        # -----------------------------------------------------
-        # 2) الصفحة القديمة كانت تحتاج الضغط على زر اختيار الحساب.
-        # -----------------------------------------------------
-        account_button = self.page.locator(
-            ".portal-selection-button-secondary"
-        ).first
+    # ========================================================
+    # LOGIN
+    # ========================================================
 
-        if account_button.count() > 0:
-            try:
-                if account_button.is_visible(timeout=3000):
+    def login(
+        self,
+        student_id=None,
+        password=None,
+    ):
+        student_id = (
+            student_id
+            or STUDENT_ID
+        )
+
+        password = (
+            password
+            or PASSWORD
+        )
+
+        if not student_id:
+            raise RuntimeError(
+                "اسم المستخدم فارغ."
+            )
+
+        if not password:
+            raise RuntimeError(
+                "كلمة المرور فارغة."
+            )
+
+        print(
+            "🔑 جاري تسجيل الدخول تلقائيًا...",
+            flush=True,
+        )
+
+        self.page.goto(
+            PORTAL_URL,
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+
+        # ننتظر تحميل JavaScript إن أمكن.
+        try:
+            self.page.wait_for_load_state(
+                "networkidle",
+                timeout=15000,
+            )
+        except Exception:
+            pass
+
+        # ----------------------------------------------------
+        # لو نموذج الدخول ظاهر بالفعل لا نضغط أي شيء.
+        # ----------------------------------------------------
+
+        student = self.page.locator(
+            "#student_id"
+        )
+
+        if not student.is_visible(
+            timeout=5000
+        ):
+            # ------------------------------------------------
+            # محاولة زر اختيار الحساب القديم.
+            # ------------------------------------------------
+
+            selectors = [
+                ".portal-selection-button-secondary",
+                "button.portal-selection-button-secondary",
+                "[class*='portal-selection-button']",
+            ]
+
+            clicked = False
+
+            for selector in selectors:
+                try:
+                    locator = self.page.locator(
+                        selector
+                    ).first
+
+                    if locator.count() <= 0:
+                        continue
+
+                    if not locator.is_visible(
+                        timeout=2000
+                    ):
+                        continue
+
                     print(
                         "🖱️ جاري اختيار حساب الطالب...",
                         flush=True,
                     )
 
-                    account_button.click(
+                    locator.click(
                         timeout=10000
                     )
 
-            except Exception:
-                pass
+                    clicked = True
+                    break
 
-        # -----------------------------------------------------
-        # 3) ننتظر ظهور حقل اسم المستخدم.
-        # -----------------------------------------------------
-        try:
-            self.page.wait_for_selector(
-                "#student_id",
-                state="visible",
-                timeout=15000,
-            )
+                except Exception:
+                    continue
 
-        except Exception as e:
-            # تشخيص الصفحة بدل Timeout غامض.
+            # ------------------------------------------------
+            # ننتظر ظهور نموذج الدخول.
+            # ------------------------------------------------
+
             try:
-                current_url = self.page.url
-
-                title = self.page.title()
-
-                body_text = self.page.locator(
-                    "body"
-                ).inner_text(
-                    timeout=5000
+                self.page.wait_for_selector(
+                    "#student_id",
+                    state="visible",
+                    timeout=15000,
                 )
 
-                body_text = re.sub(
-                    r"\s+",
-                    " ",
-                    body_text,
-                ).strip()
+            except Exception as exc:
 
-                if len(body_text) > 1000:
-                    body_text = body_text[:1000]
+                # أحيانًا Qureo يحتاج الضغط على زر
+                # يحتوي نصًا بدل الـ class القديم.
 
-                raise RuntimeError(
-                    "تعذّر العثور على نموذج تسجيل الدخول في Qureo. "
-                    f"URL={current_url} | "
-                    f"TITLE={title} | "
-                    f"PAGE={body_text}"
-                ) from e
+                text_selectors = [
+                    "text=Student",
+                    "text=Student Login",
+                    "text=Student account",
+                    "text=طالب",
+                    "text=تسجيل الدخول",
+                ]
 
-            except RuntimeError:
-                raise
+                for selector in text_selectors:
+                    try:
+                        locator = self.page.locator(
+                            selector
+                        ).first
 
-            except Exception as diagnostic_error:
-                raise RuntimeError(
-                    "تعذّر العثور على نموذج تسجيل الدخول في Qureo "
-                    "ولم نتمكن من قراءة محتوى الصفحة."
-                ) from diagnostic_error
+                        if locator.count() <= 0:
+                            continue
 
-    # ---------------------------------------------------------
-    # 4) تعبئة بيانات الدخول.
-    # ---------------------------------------------------------
-    self.page.locator(
-        "#student_id"
-    ).fill(
-        student_id
-    )
+                        if not locator.is_visible(
+                            timeout=1000
+                        ):
+                            continue
 
-    password_input = self.page.locator(
-        "#password"
-    )
+                        locator.click(
+                            timeout=5000
+                        )
 
-    if not password_input.is_visible(timeout=5000):
-        raise RuntimeError(
-            "ظهر حقل اسم المستخدم، لكن حقل كلمة المرور "
-            "#password غير ظاهر في صفحة Qureo."
+                        break
+
+                    except Exception:
+                        continue
+
+                try:
+                    self.page.wait_for_selector(
+                        "#student_id",
+                        state="visible",
+                        timeout=10000,
+                    )
+
+                except Exception as final_exc:
+
+                    # ------------------------------------------------
+                    # تشخيص الصفحة الحقيقي.
+                    # ------------------------------------------------
+
+                    current_url = self.page.url
+
+                    try:
+                        title = self.page.title()
+                    except Exception:
+                        title = ""
+
+                    try:
+                        body = (
+                            self.page.locator(
+                                "body"
+                            ).inner_text(
+                                timeout=5000
+                            )
+                        )
+
+                        body = re.sub(
+                            r"\s+",
+                            " ",
+                            body,
+                        ).strip()
+
+                        if len(body) > 1500:
+                            body = body[:1500]
+
+                    except Exception:
+                        body = ""
+
+                    raise RuntimeError(
+                        "لم يظهر نموذج تسجيل الدخول في Qureo. "
+                        f"URL={current_url} | "
+                        f"TITLE={title} | "
+                        f"PAGE={body}"
+                    ) from final_exc
+
+        # ====================================================
+        # FILL CREDENTIALS
+        # ====================================================
+
+        student = self.page.locator(
+            "#student_id"
         )
 
-    password_input.fill(
-        password
-    )
+        if not student.is_visible(
+            timeout=5000
+        ):
+            raise RuntimeError(
+                "حقل اسم المستخدم #student_id غير ظاهر."
+            )
 
-    # ---------------------------------------------------------
-    # 5) الضغط على زر تسجيل الدخول.
-    # ---------------------------------------------------------
-    login_button = self.page.locator(
-        "button.login-button"
-    ).first
-
-    if login_button.count() == 0:
-        raise RuntimeError(
-            "لم يتم العثور على زر تسجيل الدخول "
-            "button.login-button في صفحة Qureo."
+        student.fill(
+            student_id
         )
 
-    try:
+        password_input = self.page.locator(
+            "#password"
+        )
+
+        if not password_input.is_visible(
+            timeout=5000
+        ):
+            raise RuntimeError(
+                "حقل كلمة المرور #password غير ظاهر."
+            )
+
+        password_input.fill(
+            password
+        )
+
+        # ====================================================
+        # LOGIN BUTTON
+        # ====================================================
+
+        login_button = None
+
+        button_selectors = [
+            "button.login-button",
+            "button[type='submit']",
+            "input[type='submit']",
+        ]
+
+        for selector in button_selectors:
+            try:
+                candidate = self.page.locator(
+                    selector
+                ).first
+
+                if candidate.count() <= 0:
+                    continue
+
+                if not candidate.is_visible(
+                    timeout=2000
+                ):
+                    continue
+
+                login_button = candidate
+                break
+
+            except Exception:
+                continue
+
+        if login_button is None:
+            raise RuntimeError(
+                "لم يتم العثور على زر تسجيل الدخول."
+            )
+
         login_button.click(
             timeout=15000
         )
 
-    except Exception as e:
-        raise RuntimeError(
-            "تعذّر الضغط على زر تسجيل الدخول في Qureo."
-        ) from e
+        # ====================================================
+        # LOGIN RESULT
+        # ====================================================
 
-    # ---------------------------------------------------------
-    # 6) انتظار اختفاء نموذج الدخول.
-    # ---------------------------------------------------------
-    try:
-        self.page.wait_for_selector(
-            "#student_id",
-            state="detached",
-            timeout=30000,
-        )
+        success = False
 
-    except Exception:
-        # بعض إصدارات الموقع لا تحذف العنصر،
-        # لذلك نتحقق أيضًا من URL أو تغيّر الصفحة.
+        # الحالة القديمة:
+        # نموذج الدخول يختفي.
         try:
-            current_url = self.page.url
+            self.page.wait_for_selector(
+                "#student_id",
+                state="detached",
+                timeout=30000,
+            )
 
-            if (
-                "login" in current_url.lower()
-                or self.page.locator(
-                    "#student_id"
-                ).is_visible(timeout=2000)
-            ):
-                raise RuntimeError(
-                    "فشل تسجيل الدخول — تأكد من اسم المستخدم "
-                    "وكلمة المرور."
-                )
-
-        except RuntimeError:
-            raise
+            success = True
 
         except Exception:
-            # لو العنصر اختفى فعليًا لكن Playwright لم يلتقط
-            # detached بالشكل المتوقع، نعتبر العملية ناجحة.
             pass
 
-    time.sleep(0.8)
+        # بعض الإصدارات تخفي النموذج بدل حذفه.
+        if not success:
+            try:
+                if not self.page.locator(
+                    "#student_id"
+                ).is_visible(
+                    timeout=3000
+                ):
+                    success = True
 
-    print(
-        "✅ تم تسجيل الدخول.",
-        flush=True,
-    )
+            except Exception:
+                pass
+
+        # أو ينتقل الموقع لمسار مختلف.
+        if not success:
+            try:
+                current_url = (
+                    self.page.url.lower()
+                )
+
+                if (
+                    "login" not in current_url
+                    and "auth" not in current_url
+                ):
+                    success = True
+
+            except Exception:
+                pass
+
+        if not success:
+            raise RuntimeError(
+                "فشل تسجيل الدخول — "
+                "تأكد من اسم المستخدم وكلمة المرور."
+            )
+
+        time.sleep(0.8)
+
+        print(
+            "✅ تم تسجيل الدخول.",
+            flush=True,
+        )
+
+    # ========================================================
+    # COURSE
+    # ========================================================
 
     def enter_course(self, name):
-        """اختيار مسار معيّن من صفحة البوابة."""
-
         print(
             f"📥 جاري الدخول إلى مسار {name}...",
             flush=True,
@@ -340,6 +561,7 @@ def login(self, student_id=None, password=None):
         self.page.goto(
             PORTAL_HOME,
             wait_until="domcontentloaded",
+            timeout=60000,
         )
 
         self.page.wait_for_selector(
@@ -359,21 +581,32 @@ def login(self, student_id=None, password=None):
         time.sleep(0.8)
 
         print(
-            f"✅ تم الدخول إلى مسار {name}: {self.page.url}",
+            f"✅ تم الدخول إلى مسار {name}: "
+            f"{self.page.url}",
             flush=True,
         )
 
-    # -------------------------------------------------------------------- api
+    # ========================================================
+    # API
+    # ========================================================
 
-    def _req(self, method, path, body=None):
+    def _req(
+        self,
+        method,
+        path,
+        body=None,
+    ):
         url = BASE + path
+
         req = self.context.request
 
         if method == "GET":
             return req.get(url)
 
         data = json.dumps(
-            body if body is not None else {}
+            body
+            if body is not None
+            else {}
         )
 
         if method == "PUT":
@@ -392,18 +625,27 @@ def login(self, student_id=None, password=None):
 
         raise ValueError(method)
 
-    def api_get_json(self, path, default=None):
-        r = self._req("GET", path)
+    def api_get_json(
+        self,
+        path,
+        default=None,
+    ):
+        response = self._req(
+            "GET",
+            path,
+        )
 
-        if r.status != 200:
+        if response.status != 200:
             return default
 
         try:
-            return r.json()
+            return response.json()
         except Exception:
             return default
 
-    # إرسال عدة طلبات متوازية من داخل الصفحة.
+    # ========================================================
+    # PARALLEL FETCH
+    # ========================================================
 
     _FETCH_JS = """
     async (reqs) => {
@@ -414,7 +656,7 @@ def login(self, student_id=None, password=None):
                 try {
                     const opts = {
                         method: r.method,
-                        credentials: 'include',
+                        credentials: "include",
                         headers: {}
                     };
 
@@ -422,8 +664,9 @@ def login(self, student_id=None, password=None):
                         r.body !== null &&
                         r.body !== undefined
                     ) {
-                        opts.headers['Content-Type'] =
-                            'application/json';
+                        opts.headers[
+                            "Content-Type"
+                        ] = "application/json";
 
                         opts.body =
                             JSON.stringify(r.body);
@@ -460,8 +703,6 @@ def login(self, student_id=None, password=None):
     """
 
     def fetch_many(self, reqs):
-        """يرسل قائمة طلبات متوازية ويعيد النتائج بنفس الترتيب."""
-
         if not reqs:
             return []
 
@@ -470,7 +711,9 @@ def login(self, student_id=None, password=None):
             reqs,
         )
 
-    # -------------------------------------------------------------- discovery
+    # ========================================================
+    # DISCOVERY
+    # ========================================================
 
     def _section_from_course(self):
         me = self.api_get_json(
@@ -478,7 +721,9 @@ def login(self, student_id=None, password=None):
             {},
         ) or {}
 
-        code = me.get("course_code")
+        code = me.get(
+            "course_code"
+        )
 
         if not code:
             return None
@@ -488,39 +733,62 @@ def login(self, student_id=None, password=None):
             {},
         ) or {}
 
-        basic = course.get("basic_section") or {}
+        basic = (
+            course.get(
+                "basic_section"
+            )
+            or {}
+        )
 
         return basic.get("id")
 
     def resolve_section_id(self):
-        deadline = time.time() + 120
+        deadline = (
+            time.time() + 120
+        )
 
         while time.time() < deadline:
-            sid = self._section_from_course()
+
+            sid = (
+                self._section_from_course()
+            )
 
             if sid:
                 return sid
 
-            m = re.search(
+            match = re.search(
                 r"/section/(\d+)",
                 self.page.url,
             )
 
-            if m:
-                return int(m.group(1))
+            if match:
+                return int(
+                    match.group(1)
+                )
 
-            m = re.search(
+            match = re.search(
                 r"/chapter/(\d+)",
                 self.page.url,
             )
 
-            if m:
+            if match:
                 data = self.api_get_json(
-                    f"/api/study/chapters/{m.group(1)}"
+                    f"/api/study/chapters/"
+                    f"{match.group(1)}"
                 )
 
-                if data and data.get("section"):
-                    return data["section"]["id"]
+                if (
+                    data
+                    and data.get("section")
+                ):
+                    return data[
+                        "section"
+                    ]["id"]
+
+            if stop_requested():
+                raise RuntimeError(
+                    "تم إيقاف التشغيل بواسطة المستخدم"
+                )
 
             time.sleep(1)
 
@@ -528,20 +796,24 @@ def login(self, student_id=None, password=None):
             "تعذّر تحديد القسم الحالي."
         )
 
-    # --------------------------------------------------------------- lectures
+    # ========================================================
+    # LECTURES
+    # ========================================================
 
     def complete_lecture(self, lid):
         self._req(
             "PUT",
-            f"/api/study/students/lectures/{lid}",
+            f"/api/study/students/"
+            f"lectures/{lid}",
         )
 
-        r = self._req(
+        response = self._req(
             "PUT",
-            f"/api/study/students/lectures/{lid}/complete",
+            f"/api/study/students/"
+            f"lectures/{lid}/complete",
         )
 
-        return r.status == 200
+        return response.status == 200
 
     def complete_chapter_lectures(
         self,
@@ -550,34 +822,44 @@ def login(self, student_id=None, password=None):
         progress=None,
     ):
         if progress is None:
-            progress = self.api_get_json(
-                f"/api/study/students/chapters/{cid}/lectures",
-                [],
-            ) or []
+            progress = (
+                self.api_get_json(
+                    f"/api/study/students/"
+                    f"chapters/{cid}/lectures",
+                    [],
+                )
+                or []
+            )
 
         if chapter is None:
-            chapter = self.api_get_json(
-                f"/api/study/chapters/{cid}",
-                {},
-            ) or {}
+            chapter = (
+                self.api_get_json(
+                    f"/api/study/chapters/{cid}",
+                    {},
+                )
+                or {}
+            )
 
         done = {
-            p.get("lecture_id")
-            for p in progress
-            if p.get("completed_at")
+            item.get("lecture_id")
+            for item in progress
+            if item.get("completed_at")
         }
 
         todo = [
-            lec
-            for lec in chapter.get("lectures", [])
-            if lec["id"] not in done
+            lecture
+            for lecture in chapter.get(
+                "lectures",
+                [],
+            )
+            if lecture["id"] not in done
         ]
 
         if not todo:
             return
 
-        # المحاضرات لها ترتيب إجباري على السيرفر.
-        for lec in todo:
+        for lecture in todo:
+
             if stop_requested():
                 raise RuntimeError(
                     "تم إيقاف التشغيل بواسطة المستخدم"
@@ -585,51 +867,63 @@ def login(self, student_id=None, password=None):
 
             self._req(
                 "PUT",
-                f"/api/study/students/lectures/{lec['id']}",
+                f"/api/study/students/lectures/{lecture['id']}",
                 {},
             )
 
-            r = self._req(
+            response = self._req(
                 "PUT",
-                f"/api/study/students/lectures/{lec['id']}/complete",
+                f"/api/study/students/"
+                f"lectures/{lecture['id']}/complete",
                 {},
             )
 
-            if r.status == 200:
+            if response.status == 200:
                 print(
-                    f"   📗 محاضرة {lec.get('seq')}: "
-                    f"{lec.get('title', '')} — تم",
+                    f"   📗 محاضرة "
+                    f"{lecture.get('seq')}: "
+                    f"{lecture.get('title', '')} — تم",
                     flush=True,
                 )
-
             else:
                 print(
                     f"   ⚠️ تعذّر إكمال المحاضرة "
-                    f"{lec['id']} ({r.status})",
+                    f"{lecture['id']} "
+                    f"({response.status})",
                     flush=True,
                 )
 
-    # ------------------------------------------------------------------ tests
+    # ========================================================
+    # TESTS
+    # ========================================================
 
     def _start_test(self, cid):
         return self._req(
             "PUT",
-            f"/api/study/students/chapters/{cid}/test",
+            f"/api/study/students/"
+            f"chapters/{cid}/test",
         ).status
 
-    def _result_path(self, cid, test_type):
+    def _result_path(
+        self,
+        cid,
+        test_type,
+    ):
         if test_type == "test":
             return (
-                f"/api/study/students/chapters/"
-                f"{cid}/test/result"
+                f"/api/study/students/"
+                f"chapters/{cid}/test/result"
             )
 
         return (
-            f"/api/study/students/chapters/"
-            f"{cid}/review/result"
+            f"/api/study/students/"
+            f"chapters/{cid}/review/result"
         )
 
-    def _answer_base(self, test_type):
+    def _answer_base(
+        self,
+        test_type,
+    ):
         if test_type == "test":
             return "test-questions"
 
@@ -639,16 +933,26 @@ def login(self, student_id=None, password=None):
     def _extract_key(result):
         key = {}
 
-        for cr in (
+        for choice_result in (
             result or {}
-        ).get("choice_results", []) or []:
+        ).get(
+            "choice_results",
+            [],
+        ) or []:
 
-            qid = cr.get("question_id")
+            qid = choice_result.get(
+                "question_id"
+            )
 
             correct = [
-                c["choice"]["id"]
-                for c in (cr.get("choices") or [])
-                if c.get("correct")
+                choice["choice"]["id"]
+                for choice in (
+                    choice_result.get(
+                        "choices"
+                    )
+                    or []
+                )
+                if choice.get("correct")
             ]
 
             if qid and correct:
@@ -657,32 +961,43 @@ def login(self, student_id=None, password=None):
                     correct[0],
                 )
 
-        for dr in (
+        for description_result in (
             result or {}
-        ).get("description_results", []) or []:
+        ).get(
+            "description_results",
+            [],
+        ) or []:
 
-            qid = dr.get("question_id")
+            qid = description_result.get(
+                "question_id"
+            )
 
             if (
                 qid
-                and dr.get("model_answer") is not None
+                and description_result.get(
+                    "model_answer"
+                ) is not None
             ):
                 key[qid] = (
                     "description",
-                    dr["model_answer"],
+                    description_result[
+                        "model_answer"
+                    ],
                 )
 
         return key
 
-    # ------------------------------------------------------------ answer bank
+    # ========================================================
+    # ANSWER BANK
+    # ========================================================
 
     def _load_answers(self):
         try:
             with open(
                 ANSWER_FILE,
                 encoding="utf-8",
-            ) as f:
-                return json.load(f)
+            ) as file:
+                return json.load(file)
 
         except Exception:
             return {}
@@ -692,31 +1007,38 @@ def login(self, student_id=None, password=None):
             ANSWER_FILE,
             "w",
             encoding="utf-8",
-        ) as f:
+        ) as file:
             json.dump(
                 self.answers,
-                f,
+                file,
                 ensure_ascii=False,
                 indent=1,
             )
 
     def _stored_key(self, cid):
-        """الإجابات المحفوظة لفصل معيّن."""
-
         raw = self.answers.get(
             str(cid),
             {},
         )
 
-        return {
-            int(q): (
-                v[0],
-                v[1],
-            )
-            for q, v in raw.items()
-        }
+        result = {}
 
-    def _save_key(self, cid, key):
+        for question_id, value in raw.items():
+            try:
+                result[int(question_id)] = (
+                    value[0],
+                    value[1],
+                )
+            except Exception:
+                continue
+
+        return result
+
+    def _save_key(
+        self,
+        cid,
+        key,
+    ):
         if not key:
             return
 
@@ -727,8 +1049,14 @@ def login(self, student_id=None, password=None):
 
         merged.update(
             {
-                str(q): [k, v]
-                for q, (k, v) in key.items()
+                str(question_id): [
+                    kind,
+                    value,
+                ]
+                for question_id, (
+                    kind,
+                    value,
+                ) in key.items()
             }
         )
 
@@ -736,42 +1064,47 @@ def login(self, student_id=None, password=None):
 
         self._save_answers()
 
-    def _bank_covers(self, ch):
-        """هل بنك الإجابات يغطي كل أسئلة الفصل؟"""
-
-        qc = ch.get(
+    def _bank_covers(self, chapter):
+        question_count = chapter.get(
             "question_count",
             0,
         )
 
         return (
-            bool(qc)
+            bool(question_count)
             and len(
                 self.answers.get(
-                    str(ch["id"]),
+                    str(chapter["id"]),
                     {},
                 )
-            ) >= qc
+            ) >= question_count
         )
 
     def _harvest_chapter(self, cid):
-        """
-        يقرأ نتيجة محاولة سابقة لفصل واحد
-        ويحدّث البنك.
-        """
-
         key = {}
 
-        for path in (
-            f"/api/study/students/chapters/{cid}/review/result",
-            f"/api/study/students/chapters/{cid}/test/result",
-        ):
+        paths = [
+            (
+                f"/api/study/students/"
+                f"chapters/{cid}/review/result"
+            ),
+            (
+                f"/api/study/students/"
+                f"chapters/{cid}/test/result"
+            ),
+        ]
+
+        for path in paths:
+
             data = self.api_get_json(
                 path,
                 None,
             )
 
-            if not isinstance(data, dict):
+            if not isinstance(
+                data,
+                dict,
+            ):
                 continue
 
             if isinstance(
@@ -781,7 +1114,9 @@ def login(self, student_id=None, password=None):
                 data = data["result"]
 
             key.update(
-                self._extract_key(data)
+                self._extract_key(
+                    data
+                )
             )
 
         if key:
@@ -793,51 +1128,66 @@ def login(self, student_id=None, password=None):
         return len(key)
 
     def harvest_course(self):
-        """
-        يحدّث البنك من نتائج المحاولات السابقة،
-        للفصول غير المغطاة فقط.
-        """
+        section_id = (
+            self.resolve_section_id()
+        )
 
-        section_id = self.resolve_section_id()
+        section = (
+            self.api_get_json(
+                f"/api/study/sections/"
+                f"{section_id}",
+                {},
+            )
+            or {}
+        )
 
-        section = self.api_get_json(
-            f"/api/study/sections/{section_id}",
-            {},
-        ) or {}
+        progress = (
+            self.api_get_json(
+                f"/api/study/students/"
+                f"sections/{section_id}/chapters",
+                [],
+            )
+            or []
+        )
 
-        progress = self.api_get_json(
-            f"/api/study/students/sections/"
-            f"{section_id}/chapters",
-            [],
-        ) or []
-
-        pmap = {
-            p.get("chapter_id"): p
-            for p in progress
+        progress_map = {
+            item.get("chapter_id"): item
+            for item in progress
         }
 
         found = 0
 
-        for ch in section.get(
+        for chapter in section.get(
             "chapters",
             [],
         ):
-            if self._bank_covers(ch):
+
+            if self._bank_covers(
+                chapter
+            ):
                 continue
+
+            chapter_progress = (
+                progress_map.get(
+                    chapter["id"],
+                    {},
+                )
+                or {}
+            )
 
             if (
-                pmap.get(
-                    ch["id"],
-                    {},
-                ) or {}
-            ).get(
-                "best_correct_count",
-                0,
-            ) <= 0:
+                chapter_progress.get(
+                    "best_correct_count",
+                    0,
+                )
+                <= 0
+            ):
                 continue
 
-            found += self._harvest_chapter(
-                ch["id"]
+            found += (
+                self._harvest_chapter(
+                    chapter["id"]
+                )
             )
 
         print(
@@ -845,6 +1195,10 @@ def login(self, student_id=None, password=None):
             f"{found} إجابة.",
             flush=True,
         )
+
+    # ========================================================
+    # ANSWERING
+    # ========================================================
 
     def _answer_q(
         self,
@@ -855,7 +1209,8 @@ def login(self, student_id=None, password=None):
     ):
         return self._req(
             "PUT",
-            f"/api/study/students/{base}/{qid}/answer/{kind}",
+            f"/api/study/students/"
+            f"{base}/{qid}/answer/{kind}",
             payload,
         )
 
@@ -867,21 +1222,30 @@ def login(self, student_id=None, password=None):
         result_path,
         key,
     ):
-        """
-        يبدأ محاولة جديدة ويرسل الإجابات بالترتيب.
-        """
-
         self._start_test(cid)
 
         for item in questions:
-            qid = item["question"]["id"]
+
+            if stop_requested():
+                raise RuntimeError(
+                    "تم إيقاف التشغيل بواسطة المستخدم"
+                )
+
+            question = item["question"]
+
+            qid = question["id"]
 
             if item.get("choices"):
-                val = key.get(
+
+                default_choice = (
+                    item["choices"][0]["id"]
+                )
+
+                value = key.get(
                     qid,
                     (
                         "choice",
-                        item["choices"][0]["id"],
+                        default_choice,
                     ),
                 )[1]
 
@@ -890,12 +1254,13 @@ def login(self, student_id=None, password=None):
                     qid,
                     "choice",
                     {
-                        "choice_id": val
+                        "choice_id": value
                     },
                 )
 
             else:
-                val = key.get(
+
+                value = key.get(
                     qid,
                     (
                         "description",
@@ -908,14 +1273,17 @@ def login(self, student_id=None, password=None):
                     qid,
                     "description",
                     {
-                        "answer_code": val
+                        "answer_code": value
                     },
                 )
 
-        result = self.api_get_json(
-            result_path,
-            {},
-        ) or {}
+        result = (
+            self.api_get_json(
+                result_path,
+                {},
+            )
+            or {}
+        )
 
         if isinstance(
             result.get("result"),
@@ -930,10 +1298,14 @@ def login(self, student_id=None, password=None):
         cid,
         test_type="review",
     ):
-        questions = self.api_get_json(
-            f"/api/study/chapters/{cid}/test",
-            [],
-        ) or []
+        questions = (
+            self.api_get_json(
+                f"/api/study/chapters/"
+                f"{cid}/test",
+                [],
+            )
+            or []
+        )
 
         if not questions:
             return {
@@ -952,7 +1324,9 @@ def login(self, student_id=None, password=None):
 
         total = len(questions)
 
-        key = self._stored_key(cid)
+        key = self._stored_key(
+            cid
+        )
 
         cached_complete = all(
             item["question"]["id"] in key
@@ -973,7 +1347,9 @@ def login(self, student_id=None, password=None):
         )
 
         key.update(
-            self._extract_key(result)
+            self._extract_key(
+                result
+            )
         )
 
         self._save_key(
@@ -995,7 +1371,6 @@ def login(self, student_id=None, password=None):
                     f"{last_correct}/{total}",
                     flush=True,
                 )
-
         else:
             print(
                 f"      🔁 محاولة 1: "
@@ -1009,6 +1384,7 @@ def login(self, student_id=None, password=None):
             last_correct < total
             and attempt < 3
         ):
+
             if stop_requested():
                 raise RuntimeError(
                     "تم إيقاف التشغيل بواسطة المستخدم"
@@ -1032,7 +1408,9 @@ def login(self, student_id=None, password=None):
             )
 
             key.update(
-                self._extract_key(result)
+                self._extract_key(
+                    result
+                )
             )
 
             self._save_key(
@@ -1050,163 +1428,200 @@ def login(self, student_id=None, password=None):
             "ok": True,
             "correct": last_correct,
             "total": total,
-            "perfect": last_correct >= total,
+            "perfect": (
+                last_correct >= total
+            ),
         }
 
-    # ----------------------------------------------------------------- course
+    # ========================================================
+    # COURSE SOLVER
+    # ========================================================
 
     def solve_course(self):
-        section_id = self.resolve_section_id()
+        section_id = (
+            self.resolve_section_id()
+        )
 
-        section = self.api_get_json(
-            f"/api/study/sections/{section_id}",
-            {},
-        ) or {}
+        section = (
+            self.api_get_json(
+                f"/api/study/sections/"
+                f"{section_id}",
+                {},
+            )
+            or {}
+        )
 
         chapters = section.get(
             "chapters",
             [],
         )
 
-        progress = self.api_get_json(
-            f"/api/study/students/sections/"
-            f"{section_id}/chapters",
-            [],
-        ) or []
+        progress = (
+            self.api_get_json(
+                f"/api/study/students/"
+                f"sections/{section_id}/chapters",
+                [],
+            )
+            or []
+        )
 
-        pmap = {
-            p.get("chapter_id"): p
-            for p in progress
+        progress_map = {
+            item.get("chapter_id"): item
+            for item in progress
         }
 
         print(
             f"📚 القسم الحالي: {section_id} "
-            f"— عدد الفصول: {len(chapters)}\n",
+            f"— عدد الفصول: "
+            f"{len(chapters)}\n",
             flush=True,
         )
 
-        # نجيب بيانات الفصول الناقصة
-        # (محاضرات + تقدم المحاضرات)
-        # دفعة واحدة متوازية.
         todo = [
-            ch
-            for ch in chapters
+            chapter
+            for chapter in chapters
             if not (
-                ch.get("question_count")
-                and pmap.get(
-                    ch["id"],
+                chapter.get(
+                    "question_count"
+                )
+                and progress_map.get(
+                    chapter["id"],
                     {},
                 ).get(
                     "best_correct_count",
                     0,
                 )
-                >= ch.get(
+                >= chapter.get(
                     "question_count"
                 )
             )
         ]
 
         detail_map = {}
-        lec_map = {}
+        lecture_map = {}
 
         if todo:
+
             details = self.fetch_many(
                 [
                     {
                         "method": "GET",
                         "path": (
                             f"/api/study/chapters/"
-                            f"{ch['id']}"
+                            f"{chapter['id']}"
                         ),
                     }
-                    for ch in todo
+                    for chapter in todo
                 ]
             )
 
-            lec_prog = self.fetch_many(
-                [
-                    {
-                        "method": "GET",
-                        "path": (
-                            f"/api/study/students/"
-                            f"chapters/{ch['id']}/lectures"
-                        ),
-                    }
-                    for ch in todo
-                ]
+            lecture_progress = (
+                self.fetch_many(
+                    [
+                        {
+                            "method": "GET",
+                            "path": (
+                                f"/api/study/students/"
+                                f"chapters/"
+                                f"{chapter['id']}/lectures"
+                            ),
+                        }
+                        for chapter in todo
+                    ]
+                )
             )
 
-            for i, ch in enumerate(todo):
-                detail_map[ch["id"]] = (
-                    details[i] or {}
+            for index, chapter in enumerate(
+                todo
+            ):
+                detail_map[
+                    chapter["id"]
+                ] = (
+                    details[index] or {}
                 ).get(
                     "data"
                 ) or None
 
-                lec_map[ch["id"]] = (
-                    lec_prog[i] or {}
+                lecture_map[
+                    chapter["id"]
+                ] = (
+                    lecture_progress[index]
+                    or {}
                 ).get(
                     "data"
                 ) or None
 
         solved = []
 
-        total_ch = len(chapters)
+        total_chapters = len(
+            chapters
+        )
 
         emit_progress(
             self.current_course,
             0,
-            total_ch,
+            total_chapters,
             "",
         )
 
-        for i, ch in enumerate(chapters):
+        for index, chapter in enumerate(
+            chapters
+        ):
+
             if stop_requested():
                 raise RuntimeError(
                     "تم إيقاف التشغيل بواسطة المستخدم"
                 )
 
-            cid = ch["id"]
+            cid = chapter["id"]
 
-            name = ch.get(
+            name = chapter.get(
                 "name",
                 "",
             )
 
-            qcount = ch.get(
+            question_count = chapter.get(
                 "question_count",
                 0,
             )
 
-            test_type = ch.get(
+            test_type = chapter.get(
                 "test_type",
                 "review",
             )
 
             emit_progress(
                 self.current_course,
-                i,
-                total_ch,
+                index,
+                total_chapters,
                 name,
             )
 
             print(
-                f"▶️ الفصل {ch.get('seq')}: "
+                f"▶️ الفصل "
+                f"{chapter.get('seq')}: "
                 f"{name} ({cid}) — "
-                f"أسئلة: {qcount} "
+                f"أسئلة: "
+                f"{question_count} "
                 f"[{test_type}]",
                 flush=True,
             )
 
-            if (
-                qcount
-                and pmap.get(
+            chapter_progress = (
+                progress_map.get(
                     cid,
                     {},
-                ).get(
+                )
+                or {}
+            )
+
+            if (
+                question_count
+                and chapter_progress.get(
                     "best_correct_count",
                     0,
-                ) >= qcount
+                )
+                >= question_count
             ):
                 print(
                     "   ✅ مُكتمل بالفعل — تخطّي",
@@ -1216,8 +1631,8 @@ def login(self, student_id=None, password=None):
                 solved.append(
                     (
                         name,
-                        qcount,
-                        qcount,
+                        question_count,
+                        question_count,
                     )
                 )
 
@@ -1228,62 +1643,66 @@ def login(self, student_id=None, password=None):
 
                 continue
 
-            # لو البنك لا يغطي الفصل وعنده محاولة سابقة،
-            # نستخرج إجاباته.
             if (
-                not self._bank_covers(ch)
-                and pmap.get(
-                    cid,
-                    {},
-                ).get(
+                not self._bank_covers(
+                    chapter
+                )
+                and chapter_progress.get(
                     "best_correct_count",
                     0,
-                ) > 0
+                )
+                > 0
             ):
-                self._harvest_chapter(cid)
+                self._harvest_chapter(
+                    cid
+                )
 
             self.complete_chapter_lectures(
                 cid,
                 detail_map.get(cid),
-                lec_map.get(cid),
+                lecture_map.get(cid),
             )
 
-            if qcount:
-                res = self.solve_test(
+            if question_count:
+
+                result = self.solve_test(
                     cid,
                     test_type,
                 )
 
-                if res.get("ok"):
+                if result.get("ok"):
+
                     mark = (
                         "💎"
-                        if res["perfect"]
+                        if result["perfect"]
                         else "✔️"
                     )
 
                     print(
                         f"   {mark} الاختبار: "
-                        f"{res['correct']}/"
-                        f"{res['total']}",
+                        f"{result['correct']}/"
+                        f"{result['total']}",
                         flush=True,
                     )
 
                     solved.append(
                         (
                             name,
-                            res["correct"],
-                            res["total"],
+                            result["correct"],
+                            result["total"],
                         )
                     )
 
                 else:
+
                     print(
                         f"   ⏭️ تخطّي الاختبار: "
-                        f"{res.get('reason')}",
+                        f"{result.get('reason')}",
                         flush=True,
                     )
 
             else:
+
                 print(
                     "   ℹ️ لا يوجد اختبار لهذا الفصل",
                     flush=True,
@@ -1296,21 +1715,23 @@ def login(self, student_id=None, password=None):
 
         emit_progress(
             self.current_course,
-            total_ch,
-            total_ch,
+            total_chapters,
+            total_chapters,
             "تم",
         )
 
         return solved
 
-    # ------------------------------------------------------------------ main
+    # ========================================================
+    # MAIN
+    # ========================================================
 
     def run(
         self,
         student_id=None,
         password=None,
         courses=None,
-        close_pause=5,
+        close_pause=0,
     ):
         if courses:
             self.courses = courses
@@ -1318,27 +1739,42 @@ def login(self, student_id=None, password=None):
         self.start()
 
         try:
+
             self.login(
                 student_id,
                 password,
             )
 
-            for name in self.courses:
+            for course_name in self.courses:
+
+                if stop_requested():
+                    raise RuntimeError(
+                        "تم إيقاف التشغيل بواسطة المستخدم"
+                    )
+
                 print(
                     "\n" + "=" * 60,
                     flush=True,
                 )
 
-                self.enter_course(name)
+                self.enter_course(
+                    course_name
+                )
 
-                self.current_course = name
+                self.current_course = (
+                    course_name
+                )
 
-                solved = self.solve_course()
+                solved = (
+                    self.solve_course()
+                )
 
                 perfect = sum(
                     1
-                    for _, c, t in solved
-                    if t and c == t
+                    for _, correct, total
+                    in solved
+                    if total
+                    and correct == total
                 )
 
                 print(
@@ -1347,8 +1783,10 @@ def login(self, student_id=None, password=None):
                 )
 
                 print(
-                    f"✨ اكتمل مسار {name}! "
-                    f"الفصول المنجزة: {len(solved)} "
+                    f"✨ اكتمل مسار "
+                    f"{course_name}! "
+                    f"الفصول المنجزة: "
+                    f"{len(solved)} "
                     f"(كاملة: {perfect})",
                     flush=True,
                 )
@@ -1358,22 +1796,41 @@ def login(self, student_id=None, password=None):
                     flush=True,
                 )
 
+            return True
+
         finally:
+
+            # لا ننتظر 5 ثواني على Railway.
+            if (
+                close_pause
+                and close_pause > 0
+            ):
+                print(
+                    f"\n🖐️ سيتم إغلاق المتصفح "
+                    f"خلال {close_pause} ثوانٍ...",
+                    flush=True,
+                )
+
+                time.sleep(
+                    close_pause
+                )
+
             if self.browser is not None:
-                if close_pause:
-                    print(
-                        f"\n🖐️ سيتم إغلاق المتصفح "
-                        f"خلال {close_pause} ثوانٍ...",
-                        flush=True,
-                    )
-
-                    time.sleep(close_pause)
-
-                self.browser.close()
+                try:
+                    self.browser.close()
+                except Exception:
+                    pass
 
             if self.playwright is not None:
-                self.playwright.stop()
+                try:
+                    self.playwright.stop()
+                except Exception:
+                    pass
 
+
+# ============================================================
+# LOCAL RUN
+# ============================================================
 
 if __name__ == "__main__":
     QureoSolver(
