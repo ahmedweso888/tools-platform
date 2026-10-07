@@ -286,6 +286,139 @@ class QureoSolver:
         )
 
     # ------------------------------------------------------------------
+    # DIRECT NETWORK DIAGNOSTIC
+    # ------------------------------------------------------------------
+
+    def _direct_asset_diagnostic(self, url):
+        print(
+            "\n"
+            "========== DIRECT QUREO ASSET TEST ==========",
+            flush=True,
+        )
+
+        print(
+            f"🎯 URL: {url}",
+            flush=True,
+        )
+
+        try:
+            response = self.context.request.get(
+                url,
+                timeout=30000,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 "
+                        "(Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) "
+                        "Chrome/142.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": (
+                        "application/javascript,"
+                        "text/javascript,"
+                        "application/ecmascript,"
+                        "*/*;q=0.8"
+                    ),
+                    "Accept-Language": (
+                        "en-US,en;q=0.9,ar;q=0.8"
+                    ),
+                },
+            )
+
+            content_type = (
+                response.headers.get(
+                    "content-type",
+                    "",
+                )
+                or ""
+            )
+
+            print(
+                f"STATUS: {response.status}",
+                flush=True,
+            )
+
+            print(
+                f"CONTENT-TYPE: {content_type}",
+                flush=True,
+            )
+
+            print(
+                f"FINAL-URL: {response.url}",
+                flush=True,
+            )
+
+            print(
+                f"SERVER: "
+                f"{response.headers.get('server', '')}",
+                flush=True,
+            )
+
+            print(
+                f"LOCATION: "
+                f"{response.headers.get('location', '')}",
+                flush=True,
+            )
+
+            print(
+                "\n---------- FIRST 2000 BYTES ----------",
+                flush=True,
+            )
+
+            try:
+                body = response.body()
+
+                preview = body[:2000].decode(
+                    "utf-8",
+                    errors="replace",
+                )
+
+                print(
+                    preview,
+                    flush=True,
+                )
+
+            except Exception as body_error:
+                print(
+                    f"تعذر قراءة body: {body_error}",
+                    flush=True,
+                )
+
+            print(
+                "========== END DIRECT ASSET TEST ==========\n",
+                flush=True,
+            )
+
+            return {
+                "status": response.status,
+                "content_type": content_type,
+                "url": response.url,
+            }
+
+        except Exception as e:
+            print(
+                "\n❌ DIRECT ASSET TEST FAILED",
+                flush=True,
+            )
+
+            print(
+                f"ERROR: {repr(e)}",
+                flush=True,
+            )
+
+            print(
+                "========== END DIRECT ASSET TEST ==========\n",
+                flush=True,
+            )
+
+            return {
+                "status": 0,
+                "content_type": "",
+                "url": url,
+                "error": str(e),
+            }
+
+    # ------------------------------------------------------------------
     # diagnostics
     # ------------------------------------------------------------------
 
@@ -562,9 +695,25 @@ class QureoSolver:
             flush=True,
         )
 
+        # --------------------------------------------------------------
+        # الاختبار المباشر الحاسم
+        # --------------------------------------------------------------
+
+        js_assets = [
+            url
+            for url in urls
+            if "/assets/" in url
+            and url.lower().endswith(".js")
+        ]
+
+        if js_assets:
+            self._direct_asset_diagnostic(
+                js_assets[0]
+            )
+
         broken = False
 
-        # نفحص أول 12 فقط حتى لا نعمل ضغط غير ضروري
+        # نفحص أول 12 فقط
         for url in urls[:12]:
             result = (
                 self._check_asset_directly(
@@ -762,17 +911,6 @@ class QureoSolver:
         student_id=None,
         password=None,
     ):
-        """
-        تسجيل الدخول إلى Qureo.
-
-        يدعم:
-        1. زر Learning Login.
-        2. نموذج الدخول المباشر.
-        3. البحث داخل جميع الـiframes.
-        4. fallback من /login إلى /.
-        5. تشخيص مشكلة static assets.
-        """
-
         student_id = (
             student_id or STUDENT_ID
         )
@@ -792,22 +930,11 @@ class QureoSolver:
             flush=True,
         )
 
-        # --------------------------------------------------------------
-        # محاولة 1: login
-        # --------------------------------------------------------------
-
         frontend_ready = (
             self._open_portal_page(
                 PORTAL_URL
             )
         )
-
-        # --------------------------------------------------------------
-        # محاولة 2: root
-        #
-        # بعض نسخ Qureo تعرض نفس تطبيق SPA
-        # من / بدل /login.
-        # --------------------------------------------------------------
 
         if not frontend_ready:
             print(
@@ -825,10 +952,6 @@ class QureoSolver:
                     PORTAL_HOME
                 )
             )
-
-        # --------------------------------------------------------------
-        # لو الـfrontend لم يبدأ إطلاقًا
-        # --------------------------------------------------------------
 
         if not frontend_ready:
             self._print_page_diagnostics()
@@ -852,10 +975,6 @@ class QureoSolver:
                 f"URL={self.page.url} | "
                 f"TITLE={self.page.title()}"
             )
-
-        # --------------------------------------------------------------
-        # Learning Login
-        # --------------------------------------------------------------
 
         learning_selector = (
             "button.portal-selection-button."
@@ -927,10 +1046,6 @@ class QureoSolver:
                 flush=True,
             )
 
-        # --------------------------------------------------------------
-        # login form
-        # --------------------------------------------------------------
-
         print(
             "🔎 جاري البحث عن #student_id "
             "في الصفحة والـiframes...",
@@ -961,10 +1076,6 @@ class QureoSolver:
             flush=True,
         )
 
-        # --------------------------------------------------------------
-        # identify login frame
-        # --------------------------------------------------------------
-
         login_frame = None
 
         for frame in self.page.frames:
@@ -992,10 +1103,6 @@ class QureoSolver:
             flush=True,
         )
 
-        # --------------------------------------------------------------
-        # fill credentials
-        # --------------------------------------------------------------
-
         try:
             login_frame.locator(
                 "#student_id"
@@ -1018,10 +1125,6 @@ class QureoSolver:
             "📝 تم إدخال بيانات تسجيل الدخول.",
             flush=True,
         )
-
-        # --------------------------------------------------------------
-        # submit
-        # --------------------------------------------------------------
 
         login_button = None
 
@@ -1071,10 +1174,6 @@ class QureoSolver:
             "🔐 تم إرسال بيانات تسجيل الدخول.",
             flush=True,
         )
-
-        # --------------------------------------------------------------
-        # verify login
-        # --------------------------------------------------------------
 
         try:
             login_frame.locator(
@@ -1498,12 +1597,6 @@ class QureoSolver:
     # ------------------------------------------------------------------
 
     def inspect_course(self):
-        """
-        يجلب بنية المسار وحالة الفصول
-        للتشخيص والمتابعة.
-        لا يقوم بإرسال إجابات للاختبارات.
-        """
-
         section_id = (
             self.resolve_section_id()
         )
@@ -1712,3 +1805,6 @@ if __name__ == "__main__":
     QureoSolver(
         headless=True,
     ).run()
+
+
+
