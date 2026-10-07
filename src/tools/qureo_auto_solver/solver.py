@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import time
+from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright
 
@@ -20,23 +21,46 @@ if sys.stdout.encoding != "utf-8":
 PORTAL_URL = "https://me-portal.qureo.education/login"
 PORTAL_HOME = "https://me-portal.qureo.education/"
 BASE = "https://me-tp.qureo.education"
-JSON_HEADERS = {"Content-Type": "application/json"}
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ANSWER_FILE = os.path.join(SCRIPT_DIR, "answers.json")
+JSON_HEADERS = {
+    "Content-Type": "application/json",
+}
+
+SCRIPT_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
+
+ANSWER_FILE = os.path.join(
+    SCRIPT_DIR,
+    "answers.json",
+)
 
 STUDENT_ID = ""
 PASSWORD = ""
-COURSES = ["Python", "JavaScript"]
+
+COURSES = [
+    "Python",
+    "JavaScript",
+]
 
 PROGRESS = None
 SHOULD_STOP = None
 
 
-def emit_progress(course, done, total, label=""):
+def emit_progress(
+    course,
+    done,
+    total,
+    label="",
+):
     if PROGRESS:
         try:
-            PROGRESS(course, done, total, label)
+            PROGRESS(
+                course,
+                done,
+                total,
+                label,
+            )
         except Exception:
             pass
 
@@ -44,14 +68,21 @@ def emit_progress(course, done, total, label=""):
 def stop_requested():
     if SHOULD_STOP:
         try:
-            return bool(SHOULD_STOP())
+            return bool(
+                SHOULD_STOP()
+            )
         except Exception:
             return False
+
     return False
 
 
 class QureoSolver:
-    def __init__(self, headless=True, courses=None):
+    def __init__(
+        self,
+        headless=True,
+        courses=None,
+    ):
         self.headless = headless
         self.courses = courses or COURSES
 
@@ -59,7 +90,11 @@ class QureoSolver:
         self.browser = None
         self.context = None
         self.page = None
+
         self.current_course = ""
+
+        self.asset_results = []
+        self.frontend_broken = False
 
     # ------------------------------------------------------------------
     # browser
@@ -75,7 +110,7 @@ class QureoSolver:
 
         try:
             self.browser = self.playwright.chromium.launch(
-                headless=True,
+                headless=self.headless,
             )
 
             print(
@@ -96,51 +131,110 @@ class QureoSolver:
             },
             locale="en-US",
             timezone_id="Africa/Cairo",
+            extra_http_headers={
+                "Accept-Language": (
+                    "en-US,en;q=0.9,ar;q=0.8"
+                ),
+            },
         )
 
         self.page = self.context.new_page()
 
         # --------------------------------------------------------------
-        # مراقبة ملفات Qureo static assets
+        # request failures
         # --------------------------------------------------------------
 
-        def on_response(response):
+        def on_request_failed(request):
             try:
-                url = response.url
-                resource_type = response.request.resource_type
-                content_type = response.headers.get(
-                    "content-type",
-                    "",
-                )
+                url = request.url
 
                 if (
                     "/assets/" in url
-                    or resource_type in {
+                    or request.resource_type in {
                         "script",
                         "stylesheet",
                     }
                 ):
                     print(
-                        "📦 ASSET RESPONSE: "
-                        f"{response.status} | "
-                        f"{resource_type} | "
-                        f"{content_type} | "
+                        "❌ REQUEST FAILED: "
+                        f"{request.resource_type} | "
+                        f"{request.failure} | "
                         f"{url}",
                         flush=True,
                     )
 
-                    # أهم حالة بالنسبة للمشكلة الحالية:
-                    # JavaScript مطلوب كـ JS وليس HTML.
-                    if (
-                        resource_type == "script"
-                        and "javascript" not in content_type.lower()
-                        and "ecmascript" not in content_type.lower()
-                    ):
-                        print(
-                            "⚠️ SCRIPT MIME TYPE غير صحيح: "
-                            f"{content_type} | {url}",
-                            flush=True,
-                        )
+            except Exception:
+                pass
+
+        self.page.on(
+            "requestfailed",
+            on_request_failed,
+        )
+
+        # --------------------------------------------------------------
+        # asset responses
+        # --------------------------------------------------------------
+
+        def on_response(response):
+            try:
+                url = response.url
+                resource_type = (
+                    response.request.resource_type
+                )
+
+                content_type = (
+                    response.headers.get(
+                        "content-type",
+                        "",
+                    )
+                    or ""
+                )
+
+                is_asset = (
+                    "/assets/" in url
+                    or resource_type in {
+                        "script",
+                        "stylesheet",
+                    }
+                )
+
+                if not is_asset:
+                    return
+
+                result = {
+                    "url": url,
+                    "status": response.status,
+                    "resource_type": resource_type,
+                    "content_type": content_type,
+                }
+
+                self.asset_results.append(
+                    result
+                )
+
+                print(
+                    "📦 ASSET RESPONSE: "
+                    f"{response.status} | "
+                    f"{resource_type} | "
+                    f"{content_type} | "
+                    f"{url}",
+                    flush=True,
+                )
+
+                if (
+                    resource_type == "script"
+                    and "javascript"
+                    not in content_type.lower()
+                    and "ecmascript"
+                    not in content_type.lower()
+                ):
+                    print(
+                        "⚠️ SCRIPT MIME TYPE غير صحيح: "
+                        f"{content_type} | {url}",
+                        flush=True,
+                    )
+
+                    self.frontend_broken = True
 
             except Exception:
                 pass
@@ -151,7 +245,7 @@ class QureoSolver:
         )
 
         # --------------------------------------------------------------
-        # Console errors
+        # console
         # --------------------------------------------------------------
 
         def on_console(msg):
@@ -174,7 +268,7 @@ class QureoSolver:
         )
 
         # --------------------------------------------------------------
-        # Page JavaScript errors
+        # page errors
         # --------------------------------------------------------------
 
         def on_page_error(exc):
@@ -228,20 +322,23 @@ class QureoSolver:
             for index, frame in enumerate(frames):
                 try:
                     print(
-                        f"FRAME[{index}] URL: {frame.url}",
+                        f"FRAME[{index}] URL: "
+                        f"{frame.url}",
                         flush=True,
                     )
 
-                    body = frame.locator("body")
+                    body = frame.locator(
+                        "body"
+                    )
 
                     if body.count() > 0:
-                        text = body.inner_text(
-                            timeout=3000,
+                        body_text = body.inner_text(
+                            timeout=3000
                         )
 
                         print(
                             f"FRAME[{index}] BODY:\n"
-                            f"{text[:3000]}",
+                            f"{body_text[:3000]}",
                             flush=True,
                         )
 
@@ -282,10 +379,15 @@ class QureoSolver:
             flush=True,
         )
 
-    def _find_in_all_frames(self, selector):
+    def _find_in_all_frames(
+        self,
+        selector,
+    ):
         for frame in self.page.frames:
             try:
-                locator = frame.locator(selector)
+                locator = frame.locator(
+                    selector
+                )
 
                 if locator.count() > 0:
                     return locator.first
@@ -300,13 +402,16 @@ class QureoSolver:
         selector,
         timeout_ms=30000,
     ):
-        deadline = time.time() + (
-            timeout_ms / 1000
+        deadline = (
+            time.time()
+            + timeout_ms / 1000
         )
 
         while time.time() < deadline:
-            locator = self._find_in_all_frames(
-                selector,
+            locator = (
+                self._find_in_all_frames(
+                    selector
+                )
             )
 
             if locator is not None:
@@ -316,53 +421,272 @@ class QureoSolver:
                 except Exception:
                     return locator
 
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(
+                500
+            )
 
         return None
 
     # ------------------------------------------------------------------
-    # login
+    # frontend / assets diagnostics
     # ------------------------------------------------------------------
 
-    def login(
-        self,
-        student_id=None,
-        password=None,
-    ):
-        """
-        يدعم:
-        1. زر Learning Login.
-        2. نموذج الدخول المباشر.
-        3. البحث داخل جميع الـiframes.
-        """
+    def _collect_asset_urls(self):
+        urls = []
 
-        student_id = student_id or STUDENT_ID
-        password = password or PASSWORD
-
-        if not student_id or not password:
-            raise RuntimeError(
-                "لازم تدخل اسم المستخدم وكلمة المرور."
+        try:
+            nodes = self.page.locator(
+                "link[rel='modulepreload'], "
+                "script[type='module'][src], "
+                "script[src], "
+                "link[rel='stylesheet']"
             )
 
+            count = nodes.count()
+
+            for index in range(
+                min(count, 30)
+            ):
+                try:
+                    node = nodes.nth(index)
+
+                    href = (
+                        node.get_attribute(
+                            "href"
+                        )
+                        or node.get_attribute(
+                            "src"
+                        )
+                    )
+
+                    if not href:
+                        continue
+
+                    absolute = urljoin(
+                        self.page.url,
+                        href,
+                    )
+
+                    if absolute not in urls:
+                        urls.append(
+                            absolute
+                        )
+
+                except Exception:
+                    continue
+
+        except Exception as e:
+            print(
+                "⚠️ تعذر جمع روابط assets: "
+                f"{e}",
+                flush=True,
+            )
+
+        return urls
+
+    def _check_asset_directly(
+        self,
+        url,
+    ):
+        try:
+            response = (
+                self.context.request.get(
+                    url,
+                    timeout=15000,
+                    headers={
+                        "Accept": (
+                            "application/"
+                            "javascript,"
+                            "text/javascript,"
+                            "*/*;q=0.8"
+                        ),
+                    },
+                )
+            )
+
+            content_type = (
+                response.headers.get(
+                    "content-type",
+                    "",
+                )
+                or ""
+            )
+
+            print(
+                "🔬 ASSET CHECK: "
+                f"{response.status} | "
+                f"{content_type} | "
+                f"{url}",
+                flush=True,
+            )
+
+            return {
+                "status": response.status,
+                "content_type": content_type,
+                "url": url,
+            }
+
+        except Exception as e:
+            print(
+                "❌ ASSET CHECK FAILED: "
+                f"{url} | {e}",
+                flush=True,
+            )
+
+            return {
+                "status": 0,
+                "content_type": "",
+                "url": url,
+                "error": str(e),
+            }
+
+    def _inspect_frontend_assets(self):
         print(
-            "🔑 جاري تسجيل الدخول تلقائيًا...",
+            "\n🔍 فحص ملفات Qureo Frontend...",
             flush=True,
         )
 
-        # --------------------------------------------------------------
-        # فتح صفحة Qureo
-        # --------------------------------------------------------------
+        urls = self._collect_asset_urls()
+
+        if not urls:
+            print(
+                "⚠️ لم يتم العثور على أي "
+                "JavaScript/CSS assets في HTML.",
+                flush=True,
+            )
+
+            return False
+
+        print(
+            f"📦 تم العثور على {len(urls)} asset(s).",
+            flush=True,
+        )
+
+        broken = False
+
+        # نفحص أول 12 فقط حتى لا نعمل ضغط غير ضروري
+        for url in urls[:12]:
+            result = (
+                self._check_asset_directly(
+                    url
+                )
+            )
+
+            status = result.get(
+                "status",
+                0,
+            )
+
+            content_type = (
+                result.get(
+                    "content_type",
+                    "",
+                )
+                or ""
+            ).lower()
+
+            if (
+                "/assets/" in url
+                and (
+                    status >= 400
+                    or (
+                        url.endswith(".js")
+                        and (
+                            "javascript"
+                            not in content_type
+                            and "ecmascript"
+                            not in content_type
+                        )
+                    )
+                )
+            ):
+                broken = True
+
+        if broken:
+            self.frontend_broken = True
+
+            print(
+                "\n❌ Qureo Frontend لا يتم تحميله "
+                "بشكل صحيح.",
+                flush=True,
+            )
+
+            print(
+                "❌ واحد أو أكثر من ملفات "
+                "/assets/*.js يرجع HTML بدل JavaScript.",
+                flush=True,
+            )
+
+            print(
+                "⚠️ المشكلة ليست selector ولا iframe.",
+                flush=True,
+            )
+
+            return False
+
+        print(
+            "✅ فحص assets الأساسي سليم.",
+            flush=True,
+        )
+
+        return True
+
+    def _wait_for_frontend(
+        self,
+        timeout_ms=10000,
+    ):
+        deadline = (
+            time.time()
+            + timeout_ms / 1000
+        )
+
+        selectors = [
+            "#student_id",
+            "button.portal-selection-button",
+            "input[type='password']",
+            "form",
+        ]
+
+        while time.time() < deadline:
+            for selector in selectors:
+                locator = (
+                    self._find_in_all_frames(
+                        selector
+                    )
+                )
+
+                if locator is not None:
+                    return True
+
+            self.page.wait_for_timeout(
+                500
+            )
+
+        return False
+
+    def _open_portal_page(
+        self,
+        url,
+    ):
+        self.frontend_broken = False
+        self.asset_results = []
+
+        print(
+            f"\n🌐 جاري فتح: {url}",
+            flush=True,
+        )
 
         try:
             response = self.page.goto(
-                PORTAL_URL,
+                url,
                 wait_until="domcontentloaded",
                 timeout=60000,
             )
 
             if response is not None:
                 print(
-                    f"🌐 HTTP STATUS: {response.status}",
+                    f"🌐 HTTP STATUS: "
+                    f"{response.status}",
                     flush=True,
                 )
 
@@ -376,14 +700,16 @@ class QureoSolver:
                     pass
 
         except Exception as e:
-            self._print_page_diagnostics()
+            print(
+                f"❌ فشل فتح الصفحة: {e}",
+                flush=True,
+            )
 
-            raise RuntimeError(
-                f"فشل فتح صفحة Qureo: {e}"
-            ) from e
+            return False
 
         print(
-            f"🌐 صفحة الدخول: {self.page.url}",
+            f"🌐 الصفحة الحالية: "
+            f"{self.page.url}",
             flush=True,
         )
 
@@ -395,7 +721,137 @@ class QureoSolver:
         except Exception:
             pass
 
-        self.page.wait_for_timeout(3000)
+        self.page.wait_for_timeout(
+            2500
+        )
+
+        assets_ok = (
+            self._inspect_frontend_assets()
+        )
+
+        frontend_ready = (
+            self._wait_for_frontend(
+                timeout_ms=7000
+            )
+        )
+
+        if frontend_ready:
+            print(
+                "✅ Qureo Frontend بدأ "
+                "ويظهر به DOM قابل للتفاعل.",
+                flush=True,
+            )
+
+            return True
+
+        if not assets_ok:
+            print(
+                "⚠️ الصفحة لم تبدأ لأن "
+                "الـassets غير صحيحة.",
+                flush=True,
+            )
+
+        return False
+
+    # ------------------------------------------------------------------
+    # login
+    # ------------------------------------------------------------------
+
+    def login(
+        self,
+        student_id=None,
+        password=None,
+    ):
+        """
+        تسجيل الدخول إلى Qureo.
+
+        يدعم:
+        1. زر Learning Login.
+        2. نموذج الدخول المباشر.
+        3. البحث داخل جميع الـiframes.
+        4. fallback من /login إلى /.
+        5. تشخيص مشكلة static assets.
+        """
+
+        student_id = (
+            student_id or STUDENT_ID
+        )
+
+        password = (
+            password or PASSWORD
+        )
+
+        if not student_id or not password:
+            raise RuntimeError(
+                "لازم تدخل اسم المستخدم "
+                "وكلمة المرور."
+            )
+
+        print(
+            "🔑 جاري تسجيل الدخول تلقائيًا...",
+            flush=True,
+        )
+
+        # --------------------------------------------------------------
+        # محاولة 1: login
+        # --------------------------------------------------------------
+
+        frontend_ready = (
+            self._open_portal_page(
+                PORTAL_URL
+            )
+        )
+
+        # --------------------------------------------------------------
+        # محاولة 2: root
+        #
+        # بعض نسخ Qureo تعرض نفس تطبيق SPA
+        # من / بدل /login.
+        # --------------------------------------------------------------
+
+        if not frontend_ready:
+            print(
+                "\n🔁 لم يبدأ التطبيق من /login.",
+                flush=True,
+            )
+
+            print(
+                "🔁 سيتم تجربة الصفحة الرئيسية / ...",
+                flush=True,
+            )
+
+            frontend_ready = (
+                self._open_portal_page(
+                    PORTAL_HOME
+                )
+            )
+
+        # --------------------------------------------------------------
+        # لو الـfrontend لم يبدأ إطلاقًا
+        # --------------------------------------------------------------
+
+        if not frontend_ready:
+            self._print_page_diagnostics()
+
+            if self.frontend_broken:
+                raise RuntimeError(
+                    "Qureo Frontend لا يتم تحميله "
+                    "من الخادم بشكل صحيح. "
+                    "ملفات /assets/*.js ترجع "
+                    "Content-Type: text/html بدل "
+                    "JavaScript. "
+                    "تمت تجربة /login و /. "
+                    f"URL={self.page.url} | "
+                    f"TITLE={self.page.title()}"
+                )
+
+            raise RuntimeError(
+                "تم فتح Qureo لكن تطبيق Frontend "
+                "لم يظهر ولم يتم العثور على نموذج "
+                "تسجيل الدخول. "
+                f"URL={self.page.url} | "
+                f"TITLE={self.page.title()}"
+            )
 
         # --------------------------------------------------------------
         # Learning Login
@@ -407,8 +863,9 @@ class QureoSolver:
         )
 
         print(
-            "🔎 جاري البحث عن زر Learning Login "
-            "في الصفحة والـiframes...",
+            "\n🔎 جاري البحث عن زر "
+            "Learning Login في الصفحة "
+            "والـiframes...",
             flush=True,
         )
 
@@ -422,7 +879,8 @@ class QureoSolver:
         if learning_button is not None:
             try:
                 print(
-                    "🔘 تم العثور على زر Learning Login.",
+                    "🔘 تم العثور على زر "
+                    "Learning Login.",
                     flush=True,
                 )
 
@@ -441,11 +899,14 @@ class QureoSolver:
                 )
 
                 print(
-                    "✅ تم الضغط على Go to Learning Login.",
+                    "✅ تم الضغط على "
+                    "Go to Learning Login.",
                     flush=True,
                 )
 
-                self.page.wait_for_timeout(1500)
+                self.page.wait_for_timeout(
+                    1500
+                )
 
             except Exception as e:
                 print(
@@ -461,7 +922,8 @@ class QureoSolver:
             )
 
             print(
-                "ℹ️ سيتم البحث عن نموذج الدخول مباشرة.",
+                "ℹ️ سيتم البحث عن نموذج "
+                "الدخول مباشرة.",
                 flush=True,
             )
 
@@ -486,8 +948,10 @@ class QureoSolver:
             self._print_page_diagnostics()
 
             raise RuntimeError(
-                "لم يتم العثور على نموذج تسجيل الدخول في Qureo. "
-                "لا يوجد #student_id في الصفحة أو الـiframes. "
+                "تم تحميل Qureo Frontend لكن "
+                "لم يتم العثور على نموذج تسجيل "
+                "الدخول. لا يوجد #student_id "
+                "في الصفحة أو الـiframes. "
                 f"URL={self.page.url} | "
                 f"TITLE={self.page.title()}"
             )
@@ -497,13 +961,20 @@ class QureoSolver:
             flush=True,
         )
 
+        # --------------------------------------------------------------
+        # identify login frame
+        # --------------------------------------------------------------
+
         login_frame = None
 
         for frame in self.page.frames:
             try:
-                if frame.locator(
-                    "#student_id"
-                ).count() > 0:
+                if (
+                    frame.locator(
+                        "#student_id"
+                    ).count()
+                    > 0
+                ):
                     login_frame = frame
                     break
 
@@ -511,10 +982,13 @@ class QureoSolver:
                 continue
 
         if login_frame is None:
-            login_frame = self.page.main_frame
+            login_frame = (
+                self.page.main_frame
+            )
 
         print(
-            f"🧩 Login frame: {login_frame.url}",
+            f"🧩 Login frame: "
+            f"{login_frame.url}",
             flush=True,
         )
 
@@ -535,8 +1009,9 @@ class QureoSolver:
             self._print_page_diagnostics()
 
             raise RuntimeError(
-                "تم العثور على الفورم لكن تعذر إدخال "
-                f"البيانات: {e}"
+                "تم العثور على الفورم لكن "
+                "تعذر إدخال البيانات: "
+                f"{e}"
             ) from e
 
         print(
@@ -558,9 +1033,11 @@ class QureoSolver:
 
         for selector in selectors:
             try:
-                candidate = login_frame.locator(
-                    selector
-                ).first
+                candidate = (
+                    login_frame.locator(
+                        selector
+                    ).first
+                )
 
                 if candidate.count() > 0:
                     login_button = candidate
@@ -573,8 +1050,9 @@ class QureoSolver:
             self._print_page_diagnostics()
 
             raise RuntimeError(
-                "تم العثور على نموذج تسجيل الدخول "
-                "لكن لم يتم العثور على زر الإرسال."
+                "تم العثور على نموذج تسجيل "
+                "الدخول لكن لم يتم العثور "
+                "على زر الإرسال."
             )
 
         try:
@@ -585,7 +1063,8 @@ class QureoSolver:
 
         except Exception as e:
             raise RuntimeError(
-                f"تعذر الضغط على زر تسجيل الدخول: {e}"
+                "تعذر الضغط على زر "
+                f"تسجيل الدخول: {e}"
             ) from e
 
         print(
@@ -606,7 +1085,9 @@ class QureoSolver:
             )
 
         except Exception:
-            self.page.wait_for_timeout(2000)
+            self.page.wait_for_timeout(
+                2000
+            )
 
             still_there = False
 
@@ -624,14 +1105,18 @@ class QureoSolver:
                 self._print_page_diagnostics()
 
                 raise RuntimeError(
-                    "فشل تسجيل الدخول أو بقي نموذج الدخول "
-                    "ظاهرًا بعد إرسال البيانات."
+                    "فشل تسجيل الدخول أو بقي "
+                    "نموذج الدخول ظاهرًا بعد "
+                    "إرسال البيانات."
                 )
 
-        self.page.wait_for_timeout(1000)
+        self.page.wait_for_timeout(
+            1000
+        )
 
         print(
-            f"📍 بعد تسجيل الدخول: {self.page.url}",
+            f"📍 بعد تسجيل الدخول: "
+            f"{self.page.url}",
             flush=True,
         )
 
@@ -644,7 +1129,10 @@ class QureoSolver:
     # course navigation
     # ------------------------------------------------------------------
 
-    def enter_course(self, name):
+    def enter_course(
+        self,
+        name,
+    ):
         print(
             f"📥 جاري الدخول إلى مسار {name}...",
             flush=True,
@@ -656,7 +1144,9 @@ class QureoSolver:
             timeout=60000,
         )
 
-        self.page.wait_for_timeout(1500)
+        self.page.wait_for_timeout(
+            1500
+        )
 
         selector = f"text={name}"
 
@@ -682,7 +1172,9 @@ class QureoSolver:
             timeout=30000,
         )
 
-        self.page.wait_for_timeout(800)
+        self.page.wait_for_timeout(
+            800
+        )
 
         print(
             f"✅ تم الدخول إلى مسار {name}: "
@@ -694,7 +1186,12 @@ class QureoSolver:
     # api
     # ------------------------------------------------------------------
 
-    def _req(self, method, path, body=None):
+    def _req(
+        self,
+        method,
+        path,
+        body=None,
+    ):
         url = BASE + path
         req = self.context.request
 
@@ -702,7 +1199,9 @@ class QureoSolver:
             return req.get(url)
 
         data = json.dumps(
-            body if body is not None else {}
+            body
+            if body is not None
+            else {}
         )
 
         if method == "PUT":
@@ -721,7 +1220,11 @@ class QureoSolver:
 
         raise ValueError(method)
 
-    def api_get_json(self, path, default=None):
+    def api_get_json(
+        self,
+        path,
+        default=None,
+    ):
         response = self._req(
             "GET",
             path,
@@ -733,6 +1236,7 @@ class QureoSolver:
                 f"{response.status}",
                 flush=True,
             )
+
             return default
 
         try:
@@ -796,7 +1300,10 @@ class QureoSolver:
     }
     """
 
-    def fetch_many(self, reqs):
+    def fetch_many(
+        self,
+        reqs,
+    ):
         if not reqs:
             return []
 
@@ -815,7 +1322,9 @@ class QureoSolver:
             {},
         ) or {}
 
-        code = me.get("course_code")
+        code = me.get(
+            "course_code"
+        )
 
         if not code:
             return None
@@ -825,14 +1334,21 @@ class QureoSolver:
             {},
         ) or {}
 
-        basic = course.get(
-            "basic_section"
-        ) or {}
+        basic = (
+            course.get(
+                "basic_section"
+            )
+            or {}
+        )
 
-        return basic.get("id")
+        return basic.get(
+            "id"
+        )
 
     def resolve_section_id(self):
-        deadline = time.time() + 120
+        deadline = (
+            time.time() + 120
+        )
 
         while time.time() < deadline:
             if stop_requested():
@@ -840,7 +1356,9 @@ class QureoSolver:
                     "تم إيقاف التشغيل بواسطة المستخدم"
                 )
 
-            section_id = self._section_from_course()
+            section_id = (
+                self._section_from_course()
+            )
 
             if section_id:
                 return section_id
@@ -851,7 +1369,9 @@ class QureoSolver:
             )
 
             if match:
-                return int(match.group(1))
+                return int(
+                    match.group(1)
+                )
 
             match = re.search(
                 r"/chapter/(\d+)",
@@ -864,8 +1384,13 @@ class QureoSolver:
                     f"{match.group(1)}"
                 )
 
-                if data and data.get("section"):
-                    return data["section"]["id"]
+                if (
+                    data
+                    and data.get("section")
+                ):
+                    return data[
+                        "section"
+                    ]["id"]
 
             time.sleep(1)
 
@@ -877,7 +1402,10 @@ class QureoSolver:
     # lectures
     # ------------------------------------------------------------------
 
-    def complete_lecture(self, lecture_id):
+    def complete_lecture(
+        self,
+        lecture_id,
+    ):
         self._req(
             "PUT",
             f"/api/study/students/lectures/"
@@ -900,14 +1428,15 @@ class QureoSolver:
     ):
         if progress is None:
             progress = self.api_get_json(
-                f"/api/study/students/chapters/"
-                f"{chapter_id}/lectures",
+                f"/api/study/students/"
+                f"chapters/{chapter_id}/lectures",
                 [],
             ) or []
 
         if chapter is None:
             chapter = self.api_get_json(
-                f"/api/study/chapters/{chapter_id}",
+                f"/api/study/chapters/"
+                f"{chapter_id}",
                 {},
             ) or {}
 
@@ -936,15 +1465,15 @@ class QureoSolver:
 
             self._req(
                 "PUT",
-                f"/api/study/students/lectures/"
-                f"{lecture_id}",
+                f"/api/study/students/"
+                f"lectures/{lecture_id}",
                 {},
             )
 
             response = self._req(
                 "PUT",
-                f"/api/study/students/lectures/"
-                f"{lecture_id}/complete",
+                f"/api/study/students/"
+                f"lectures/{lecture_id}/complete",
                 {},
             )
 
@@ -952,13 +1481,14 @@ class QureoSolver:
                 print(
                     f"   📗 محاضرة "
                     f"{lecture.get('seq')}: "
-                    f"{lecture.get('title', '')} — تم",
+                    f"{lecture.get('title', '')} "
+                    f"— تم",
                     flush=True,
                 )
             else:
                 print(
-                    f"   ⚠️ تعذّر إكمال المحاضرة "
-                    f"{lecture_id} "
+                    f"   ⚠️ تعذّر إكمال "
+                    f"المحاضرة {lecture_id} "
                     f"({response.status})",
                     flush=True,
                 )
@@ -969,14 +1499,18 @@ class QureoSolver:
 
     def inspect_course(self):
         """
-        يجلب بنية المسار وحالة الفصول للتشخيص والمتابعة.
+        يجلب بنية المسار وحالة الفصول
+        للتشخيص والمتابعة.
         لا يقوم بإرسال إجابات للاختبارات.
         """
 
-        section_id = self.resolve_section_id()
+        section_id = (
+            self.resolve_section_id()
+        )
 
         section = self.api_get_json(
-            f"/api/study/sections/{section_id}",
+            f"/api/study/sections/"
+            f"{section_id}",
             {},
         ) or {}
 
@@ -986,8 +1520,8 @@ class QureoSolver:
         )
 
         progress = self.api_get_json(
-            f"/api/study/students/sections/"
-            f"{section_id}/chapters",
+            f"/api/study/students/"
+            f"sections/{section_id}/chapters",
             [],
         ) or []
 
@@ -997,12 +1531,14 @@ class QureoSolver:
         }
 
         print(
-            f"📚 القسم الحالي: {section_id}",
+            f"📚 القسم الحالي: "
+            f"{section_id}",
             flush=True,
         )
 
         print(
-            f"📚 عدد الفصول: {len(chapters)}",
+            f"📚 عدد الفصول: "
+            f"{len(chapters)}",
             flush=True,
         )
 
@@ -1015,7 +1551,9 @@ class QureoSolver:
 
         results = []
 
-        for index, chapter in enumerate(chapters):
+        for index, chapter in enumerate(
+            chapters
+        ):
             if stop_requested():
                 raise RuntimeError(
                     "تم إيقاف التشغيل بواسطة المستخدم"
@@ -1040,10 +1578,13 @@ class QureoSolver:
                 name,
             )
 
-            current_progress = pmap.get(
-                chapter_id,
-                {},
-            ) or {}
+            current_progress = (
+                pmap.get(
+                    chapter_id,
+                    {},
+                )
+                or {}
+            )
 
             best = current_progress.get(
                 "best_correct_count",
@@ -1051,7 +1592,8 @@ class QureoSolver:
             )
 
             print(
-                f"▶️ الفصل {chapter.get('seq')}: "
+                f"▶️ الفصل "
+                f"{chapter.get('seq')}: "
                 f"{name} ({chapter_id}) — "
                 f"أسئلة: {question_count} — "
                 f"أفضل نتيجة: {best}",
@@ -1062,8 +1604,12 @@ class QureoSolver:
                 {
                     "id": chapter_id,
                     "name": name,
-                    "question_count": question_count,
-                    "best_correct_count": best,
+                    "question_count": (
+                        question_count
+                    ),
+                    "best_correct_count": (
+                        best
+                    ),
                 }
             )
 
@@ -1109,11 +1655,15 @@ class QureoSolver:
                     flush=True,
                 )
 
-                self.enter_course(name)
+                self.enter_course(
+                    name
+                )
 
                 self.current_course = name
 
-                chapters = self.inspect_course()
+                chapters = (
+                    self.inspect_course()
+                )
 
                 print(
                     "=" * 60,
@@ -1121,8 +1671,10 @@ class QureoSolver:
                 )
 
                 print(
-                    f"✨ اكتمل فحص مسار {name}! "
-                    f"عدد الفصول: {len(chapters)}",
+                    f"✨ اكتمل فحص مسار "
+                    f"{name}! "
+                    f"عدد الفصول: "
+                    f"{len(chapters)}",
                     flush=True,
                 )
 
@@ -1135,12 +1687,14 @@ class QureoSolver:
             if self.browser is not None:
                 if close_pause:
                     print(
-                        f"\n🖐️ سيتم إغلاق المتصفح خلال "
-                        f"{close_pause} ثوانٍ...",
+                        f"\n🖐️ سيتم إغلاق المتصفح "
+                        f"خلال {close_pause} ثوانٍ...",
                         flush=True,
                     )
 
-                    time.sleep(close_pause)
+                    time.sleep(
+                        close_pause
+                    )
 
                 try:
                     self.browser.close()
