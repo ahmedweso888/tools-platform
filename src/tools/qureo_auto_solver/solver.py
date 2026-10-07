@@ -210,23 +210,77 @@ class QureoSolver:
             60000
         )
 
-    
+    # ========================================================
+    # LOGIN
+    # ========================================================
+
+    def login(
+        self,
+        student_id=None,
+        password=None,
+    ):
+        student_id = (
+            student_id
+            or STUDENT_ID
+        )
+
+        password = (
+            password
+            or PASSWORD
+        )
+
+        if not student_id:
+            raise RuntimeError(
+                "اسم المستخدم فارغ."
+            )
+
+        if not password:
+            raise RuntimeError(
+                "كلمة المرور فارغة."
+            )
+
+        print(
+            "🔑 جاري تسجيل الدخول تلقائيًا...",
+            flush=True,
+        )
+
         # ----------------------------------------------------
-        # اختيار زر تسجيل الدخول للتعلم
+        # فتح صفحة البورتال أولًا
+        # ----------------------------------------------------
+
+        self.page.goto(
+            PORTAL_URL,
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+
+        try:
+            self.page.wait_for_load_state(
+                "networkidle",
+                timeout=15000,
+            )
+        except Exception:
+            pass
+
+        print(
+            f"🌐 صفحة الدخول: {self.page.url}",
+            flush=True,
+        )
+
+        # ----------------------------------------------------
+        # مهم:
         #
         # Qureo يعرض زرين في صفحة البورتال.
-        # المطلوب هو الزر الثاني تحديدًا:
+        # المطلوب هو الزر الثاني.
         #
-        # Go to Learning Login
-        # /انتقل إلى تسجيل الدخول للتعلم
-        #
-        # لذلك لا نستخدم أول عنصر مطابق.
+        # لا نحاول اختيار النص قبل فتح الصفحة.
+        # ولا نضع هذا الجزء داخل start().
         # ----------------------------------------------------
 
         learning_login = None
 
-        # أول محاولة:
-        # نفس مجموعة أزرار البورتال، لكن نأخذ الزر الثاني.
+        # المحاولة الأولى:
+        # نستخدم مجموعة أزرار البورتال ونأخذ الثاني مباشرة.
         try:
             portal_buttons = self.page.locator(
                 ".portal-selection-button-secondary"
@@ -240,25 +294,20 @@ class QureoSolver:
             )
 
             if count >= 2:
-                learning_login = portal_buttons.nth(1)
+                candidate = portal_buttons.nth(1)
 
-                learning_login.wait_for(
-                    state="visible",
-                    timeout=10000,
-                )
-
-                print(
-                    "🎯 تم تحديد الزر الثاني في صفحة البورتال.",
-                    flush=True,
-                )
+                if candidate.is_visible(
+                    timeout=5000
+                ):
+                    learning_login = candidate
 
         except Exception:
             learning_login = None
 
         # ----------------------------------------------------
-        # Fallback:
-        # لو الـ class اختلف، ابحث عن أزرار البورتال كلها
-        # وخذ الزر الثاني الظاهر.
+        # fallback:
+        # أي عناصر تحمل portal-selection-button
+        # ونختار ثاني عنصر ظاهر.
         # ----------------------------------------------------
 
         if learning_login is None:
@@ -278,41 +327,108 @@ class QureoSolver:
 
                 for index in range(count):
                     try:
-                        candidate = portal_buttons.nth(index)
+                        candidate = portal_buttons.nth(
+                            index
+                        )
 
-                        if candidate.is_visible(timeout=1000):
-                            visible_buttons.append(candidate)
-
-                            try:
-                                button_text = (
-                                    candidate.inner_text(
-                                        timeout=1000
-                                    )
-                                )
-
-                                button_text = re.sub(
-                                    r"\s+",
-                                    " ",
-                                    button_text,
-                                ).strip()
-
-                                print(
-                                    f"   [{len(visible_buttons)}] "
-                                    f"{button_text}",
-                                    flush=True,
-                                )
-
-                            except Exception:
-                                pass
+                        if candidate.is_visible(
+                            timeout=1000
+                        ):
+                            visible_buttons.append(
+                                candidate
+                            )
 
                     except Exception:
                         continue
 
                 if len(visible_buttons) >= 2:
-                    learning_login = visible_buttons[1]
+                    learning_login = (
+                        visible_buttons[1]
+                    )
+
+            except Exception:
+                learning_login = None
+
+        # ----------------------------------------------------
+        # fallback أخير:
+        # ابحث عن الزرين الظاهرين في الصفحة،
+        # ونستخدم الثاني إذا كان له نص متعلق بتسجيل الدخول.
+        # ----------------------------------------------------
+
+        if learning_login is None:
+            try:
+                candidates = self.page.locator(
+                    "button, a, [role='button']"
+                )
+
+                count = candidates.count()
+
+                visible_candidates = []
+
+                for index in range(count):
+                    try:
+                        candidate = candidates.nth(
+                            index
+                        )
+
+                        if not candidate.is_visible(
+                            timeout=500
+                        ):
+                            continue
+
+                        text = ""
+
+                        try:
+                            text = candidate.inner_text(
+                                timeout=500
+                            )
+                        except Exception:
+                            pass
+
+                        text = re.sub(
+                            r"\s+",
+                            " ",
+                            text,
+                        ).strip()
+
+                        visible_candidates.append(
+                            candidate
+                        )
+
+                        print(
+                            f"🔘 زر ظاهر [{len(visible_candidates)}]: "
+                            f"{text[:150]}",
+                            flush=True,
+                        )
+
+                    except Exception:
+                        continue
+
+                # المطلوب هو الزر الثاني.
+                if len(visible_candidates) >= 2:
+                    second_button = (
+                        visible_candidates[1]
+                    )
+
+                    second_text = ""
+
+                    try:
+                        second_text = re.sub(
+                            r"\s+",
+                            " ",
+                            second_button.inner_text(
+                                timeout=1000
+                            ),
+                        ).strip()
+                    except Exception:
+                        pass
+
+                    # نستخدم الزر الثاني كما طلب المستخدم.
+                    learning_login = second_button
 
                     print(
-                        "🎯 تم اختيار الزر الثاني الظاهر.",
+                        "🎯 تم تحديد الزر الثاني الظاهر "
+                        f"({second_text[:150]}).",
                         flush=True,
                     )
 
@@ -320,45 +436,7 @@ class QureoSolver:
                 learning_login = None
 
         # ----------------------------------------------------
-        # Fallback أخير:
-        # ابحث عن النص نفسه، لكن لا نستخدمه إلا لو لم نستطع
-        # تحديد الزر الثاني بالطريقة السابقة.
-        # ----------------------------------------------------
-
-        if learning_login is None:
-            try:
-                candidates = self.page.get_by_text(
-                    re.compile(
-                        r"Go\s*to\s*Learning\s*Login"
-                        r".*"
-                        r"انتقل\s*إلى\s*تسجيل\s*الدخول\s*للتعلم",
-                        re.IGNORECASE,
-                    )
-                )
-
-                count = candidates.count()
-
-                print(
-                    f"🔎 عناصر النص المطابق: {count}",
-                    flush=True,
-                )
-
-                for index in range(count):
-                    try:
-                        candidate = candidates.nth(index)
-
-                        if candidate.is_visible(timeout=1000):
-                            learning_login = candidate
-                            break
-
-                    except Exception:
-                        continue
-
-            except Exception:
-                learning_login = None
-
-        # ----------------------------------------------------
-        # لو لم نجد الزر
+        # لو لم نجد الزر الثاني
         # ----------------------------------------------------
 
         if learning_login is None:
@@ -371,10 +449,12 @@ class QureoSolver:
                 title = ""
 
             try:
-                body = self.page.locator(
-                    "body"
-                ).inner_text(
-                    timeout=5000
+                body = (
+                    self.page.locator(
+                        "body"
+                    ).inner_text(
+                        timeout=5000
+                    )
                 )
 
                 body = re.sub(
@@ -415,8 +495,6 @@ class QureoSolver:
         except Exception:
             pass
 
-        old_url = self.page.url
-
         try:
             learning_login.click(
                 timeout=15000
@@ -436,132 +514,6 @@ class QureoSolver:
 
         print(
             "✅ تم الضغط على الزر الثاني.",
-            flush=True,
-        )
-
-        # ----------------------------------------------------
-        # انتظار انتقال الصفحة / ظهور نموذج الدخول
-        # ----------------------------------------------------
-
-        self.page.wait_for_timeout(
-            1500
-        )
-
-        try:
-            self.page.wait_for_load_state(
-                "domcontentloaded",
-                timeout=10000,
-            )
-        except Exception:
-            pass
-
-        try:
-            self.page.wait_for_load_state(
-                "networkidle",
-                timeout=10000,
-            )
-        except Exception:
-            pass
-
-        print(
-            f"📄 بعد الضغط على الزر الثاني: "
-            f"{self.page.url}",
-            flush=True,
-        )
-
-        if self.page.url != old_url:
-            print(
-                "➡️ تم الانتقال إلى صفحة جديدة.",
-                flush=True,
-            )
-
-        # ====================================================
-        # LOGIN FORM
-        # ====================================================
-
-        student = self.page.locator(
-            "#student_id"
-        )
-
-        try:
-            student.wait_for(
-                state="visible",
-                timeout=30000,
-            )
-
-        except Exception as exc:
-
-            current_url = self.page.url
-
-            try:
-                title = self.page.title()
-            except Exception:
-                title = ""
-
-            try:
-                body = self.page.locator(
-                    "body"
-                ).inner_text(
-                    timeout=5000
-                )
-
-                body = re.sub(
-                    r"\s+",
-                    " ",
-                    body,
-                ).strip()
-
-                if len(body) > 2500:
-                    body = body[:2500]
-
-            except Exception:
-                body = ""
-
-            raise RuntimeError(
-                "تم الضغط على الزر الثاني "
-                "'Go to Learning Login' "
-                "لكن نموذج تسجيل الدخول لم يظهر. "
-                f"URL={current_url} | "
-                f"TITLE={title} | "
-                f"PAGE={body}"
-            ) from exc
-
-        print(
-            "✅ ظهر نموذج تسجيل الدخول.",
-            flush=True,
-        )
-
-
-        # ----------------------------------------------------
-        # الضغط على الزر المطلوب.
-        # لو الضغط يعمل navigation ننتظره،
-        # ولو يعمل JavaScript بدون navigation نكمل عادي.
-        # ----------------------------------------------------
-
-        try:
-            with self.page.expect_navigation(
-                wait_until="domcontentloaded",
-                timeout=15000,
-            ):
-                learning_login.click(
-                    timeout=15000
-                )
-
-        except Exception:
-
-            try:
-                learning_login.click(
-                    timeout=15000,
-                    force=True,
-                )
-            except Exception as exc:
-                raise RuntimeError(
-                    "تعذّر الضغط على زر "
-                    "'Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم'."
-                ) from exc
-
-        print(
-            "✅ تم الضغط على Go to Learning Login.",
             flush=True,
         )
 
@@ -590,7 +542,7 @@ class QureoSolver:
             pass
 
         print(
-            f"📄 بعد Go to Learning Login: "
+            f"📄 بعد الضغط على الزر الثاني: "
             f"{self.page.url}",
             flush=True,
         )
@@ -1134,7 +1086,8 @@ class QureoSolver:
 
             self._req(
                 "PUT",
-                f"/api/study/students/lectures/{lecture['id']}",
+                f"/api/study/students/"
+                f"lectures/{lecture['id']}",
                 {},
             )
 
