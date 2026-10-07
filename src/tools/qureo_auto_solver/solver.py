@@ -59,31 +59,23 @@ class QureoSolver:
 
     # ------------------------------------------------------------------ setup
     def start(self):
-        print("🚀 جاري تشغيل المتصفح...", flush=True)
-        self.playwright = sync_playwright().start()
-
-        # نفس تشغيل السولفر الأصلي: Chrome ثم Edge
-        last_err = None
-        for channel in ("chrome", "msedge"):
-            try:
-                self.browser = self.playwright.chromium.launch(
-                    headless=self.headless,
-                    channel=channel,
-                )
-                print(f"🌐 تم تشغيل المتصفح: {channel}", flush=True)
-                break
-            except Exception as e:
-                last_err = e
-
-        if self.browser is None:
-            raise RuntimeError(
-                "تعذّر تشغيل المتصفح — تأكد من تثبيت Google Chrome أو Microsoft Edge."
-            ) from last_err
-
-        self.context = self.browser.new_context(
-            viewport={"width": 1280, "height": 800}
+       print("🚀 جاري تشغيل المتصفح في الخلفية...", flush=True)
+    self.playwright = sync_playwright().start()
+    try:
+        self.browser = self.playwright.chromium.launch(
+            headless=True
         )
-        self.page = self.context.new_page()
+        print("🌐 تم تشغيل Playwright Chromium في الخلفية.", flush=True)
+    except Exception as e:
+        raise RuntimeError(
+            "تعذّر تشغيل Chromium على Railway. "
+            "تأكد من تثبيت Playwright Chromium."
+        ) from e
+
+    self.context = self.browser.new_context(
+        viewport={"width": 1280, "height": 800}
+    )
+    self.page = self.context.new_page()
 
     def login(self, student_id=None, password=None):
         """تسجيل الدخول تلقائيًا إلى البوابة بالبيانات المُمرَّرة (أو الافتراضية)."""
