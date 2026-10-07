@@ -62,7 +62,10 @@ class QureoSolver:
             self.browser = self.playwright.chromium.launch(
                 headless=True
             )
-            print("🌐 تم تشغيل Playwright Chromium في الخلفية.", flush=True)
+            print(
+                "🌐 تم تشغيل Playwright Chromium في الخلفية.",
+                flush=True,
+            )
         except Exception as e:
             raise RuntimeError(
                 "تعذّر تشغيل Chromium على Railway. "
@@ -75,78 +78,134 @@ class QureoSolver:
         self.page = self.context.new_page()
 
     def login(self, student_id=None, password=None):
-        """تسجيل الدخول تلقائيًا إلى البوابة بالبيانات المُمرَّرة (أو الافتراضية)."""
+        """تسجيل الدخول سواء ظهرت صفحة اختيار البوابة أو نموذج الدخول مباشرة."""
         student_id = student_id or STUDENT_ID
         password = password or PASSWORD
 
         if not student_id or not password:
-            raise RuntimeError("لازم تدخل اسم المستخدم وكلمة المرور.")
+            raise RuntimeError(
+                "لازم تدخل اسم المستخدم وكلمة المرور."
+            )
 
-        print("🔑 جاري تسجيل الدخول تلقائيًا...", flush=True)
+        print(
+            "🔑 جاري تسجيل الدخول تلقائيًا...",
+            flush=True,
+        )
 
         self.page.goto(
             PORTAL_URL,
             wait_until="domcontentloaded",
         )
 
-        print(f"🌐 صفحة الدخول: {self.page.url}", flush=True)
-
-        # ==============================================================
-        # اختيار زر Learning Login الصحيح.
-        #
-        # الزر المطلوب في صفحة Qureo هو:
-        #
-        # <button
-        #   type="button"
-        #   class="portal-selection-button portal-selection-button-secondary"
-        # >
-        #   Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم
-        # </button>
-        #
-        # لا نعتمد على ترتيب كل الأزرار في الصفحة.
-        # ==============================================================
+        print(
+            f"🌐 صفحة الدخول: {self.page.url}",
+            flush=True,
+        )
 
         try:
-            learning_button = self.page.locator(
-                "button.portal-selection-button.portal-selection-button-secondary"
+            print(
+                f"📄 TITLE: {self.page.title()}",
+                flush=True,
+            )
+        except Exception:
+            pass
+
+        learning_button = self.page.locator(
+            "button.portal-selection-button.portal-selection-button-secondary"
+        )
+
+        student_field = self.page.locator(
+            "#student_id"
+        )
+
+        try:
+            # ندي الصفحة وقت للهيدريشن/JavaScript
+            self.page.wait_for_timeout(1500)
+
+            button_count = learning_button.count()
+
+            print(
+                f"🔎 عدد أزرار Learning Login في DOM: "
+                f"{button_count}",
+                flush=True,
             )
 
-            learning_button.wait_for(
+            # ----------------------------------------------------------
+            # الحالة الأولى:
+            # زر Learning Login موجود في الصفحة
+            # ----------------------------------------------------------
+            if button_count > 0:
+                try:
+                    print(
+                        f"🔘 نص الزر: "
+                        f"{learning_button.first.inner_text().strip()}",
+                        flush=True,
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    # force=True لأن الزر قد يكون موجودًا في DOM
+                    # لكن Playwright لا يعتبره visible أثناء الانتقال.
+                    learning_button.first.click(
+                        force=True,
+                        timeout=10000,
+                    )
+                except Exception as button_error:
+                    print(
+                        f"⚠️ الضغط العادي/القسري على زر "
+                        f"Learning Login لم ينجح: "
+                        f"{button_error}",
+                        flush=True,
+                    )
+
+                print(
+                    "✅ تم الضغط على Go to Learning Login.",
+                    flush=True,
+                )
+
+            # ----------------------------------------------------------
+            # الحالة الثانية:
+            # الزر غير موجود — يمكن أن يكون نموذج الدخول مفتوحًا
+            # مباشرة على Railway.
+            # ----------------------------------------------------------
+            else:
+                print(
+                    "ℹ️ زر Learning Login غير موجود — "
+                    "نفترض أن نموذج تسجيل الدخول مفتوح مباشرة.",
+                    flush=True,
+                )
+
+            # في الحالتين ننتظر نموذج الدخول.
+            student_field.wait_for(
                 state="visible",
                 timeout=30000,
             )
 
-            count = learning_button.count()
-
-            print(
-                f"🔎 زر Learning Login موجود: {count}",
-                flush=True,
-            )
-
-            if count < 1:
-                raise RuntimeError(
-                    "لم يتم العثور على زر Learning Login."
-                )
-
-            learning_button.first.click()
-
-            print(
-                "✅ تم الضغط على Go to Learning Login.",
-                flush=True,
-            )
-
         except Exception as e:
+            # تشخيص فعلي لما تعرضه الصفحة على Railway
+            try:
+                body_text = self.page.locator(
+                    "body"
+                ).inner_text()
+
+                print(
+                    f"📄 BODY TEXT:\n{body_text[:4000]}",
+                    flush=True,
+                )
+            except Exception:
+                pass
+
             raise RuntimeError(
-                "لم يتم العثور على زر تسجيل دخول التعلم "
-                "'Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم'. "
+                "لم يتم الوصول إلى نموذج تسجيل الدخول في Qureo. "
+                "لم يظهر زر Learning Login ولم يظهر #student_id. "
                 f"URL={self.page.url} | "
                 f"TITLE={self.page.title()}"
             ) from e
 
-        # بعد اختيار Learning Login تظهر حقول الدخول
-        self.page.wait_for_selector(
-            "#student_id",
-            timeout=30000,
+        print(
+            "📝 نموذج تسجيل الدخول جاهز، جاري إدخال البيانات...",
+            flush=True,
         )
 
         self.page.fill(
@@ -163,8 +222,13 @@ class QureoSolver:
             "button.login-button"
         ).first.click()
 
-        # نتحقق من النجاح باختفاء نموذج الدخول
-        # الموقع مش بيغيّر الرابط بعد الدخول
+        print(
+            "🔐 تم إرسال بيانات تسجيل الدخول.",
+            flush=True,
+        )
+
+        # الموقع قد لا يغيّر الرابط بعد الدخول،
+        # لذلك نتحقق من اختفاء نموذج تسجيل الدخول.
         try:
             self.page.wait_for_selector(
                 "#student_id",
@@ -173,16 +237,23 @@ class QureoSolver:
             )
         except Exception:
             raise RuntimeError(
-                "فشل تسجيل الدخول — تأكد من اسم المستخدم وكلمة المرور."
+                "فشل تسجيل الدخول — "
+                "تأكد من اسم المستخدم وكلمة المرور."
             )
 
         time.sleep(0.4)
 
-        print("✅ تم تسجيل الدخول.", flush=True)
+        print(
+            "✅ تم تسجيل الدخول.",
+            flush=True,
+        )
 
     def enter_course(self, name):
         """اختيار مسار معيّن من صفحة البوابة."""
-        print(f"📥 جاري الدخول إلى مسار {name}...", flush=True)
+        print(
+            f"📥 جاري الدخول إلى مسار {name}...",
+            flush=True,
+        )
 
         self.page.goto(
             PORTAL_HOME,
@@ -249,7 +320,7 @@ class QureoSolver:
         except Exception:
             return default
 
-    # إرسال عدة طلبات متوازية من داخل الصفحة (أسرع بكتير من التسلسل)
+    # إرسال عدة طلبات متوازية من داخل الصفحة
     _FETCH_JS = """
     async (reqs) => {
         const out = new Array(reqs.length);
@@ -408,8 +479,6 @@ class QureoSolver:
         if not todo:
             return
 
-        # المحاضرات لها ترتيب إجباري على السيرفر:
-        # start ثم complete لكل واحدة بالتتابع
         for lec in todo:
             if stop_requested():
                 raise RuntimeError(
@@ -584,7 +653,7 @@ class QureoSolver:
         )
 
     def _harvest_chapter(self, cid):
-        """يقرأ نتيجة محاولة سابقة لفصل واحد ويحدّث البنك (طلب أو اثنان فقط)."""
+        """يقرأ نتيجة محاولة سابقة لفصل واحد ويحدّث البنك."""
         key = {}
 
         for path in (
@@ -618,7 +687,7 @@ class QureoSolver:
         return len(key)
 
     def harvest_course(self):
-        """يحدّث البنك من نتائج المحاولات السابقة، للفصول غير المغطّاة فقط."""
+        """يحدّث البنك من نتائج المحاولات السابقة."""
         section_id = self.resolve_section_id()
 
         section = self.api_get_json(
@@ -686,7 +755,7 @@ class QureoSolver:
         result_path,
         key,
     ):
-        """يبدأ محاولة جديدة ويرسل الإجابات بالترتيب (السيرفر يشترط ترتيب الأسئلة)."""
+        """يبدأ محاولة جديدة ويرسل الإجابات بالترتيب."""
         self._start_test(cid)
 
         for item in questions:
@@ -891,8 +960,6 @@ class QureoSolver:
             flush=True,
         )
 
-        # نجيب بيانات الفصول الناقصة
-        # (محاضرات + تقدّم المحاضرات) دفعة واحدة متوازية
         todo = [
             ch
             for ch in chapters
@@ -1020,8 +1087,6 @@ class QureoSolver:
 
                 continue
 
-            # لو البنك لا يغطّي الفصل وعنده محاولة سابقة،
-            # نستخرج إجاباته (طلب أو اثنان فقط)
             if (
                 not self._bank_covers(ch)
                 and pmap.get(
