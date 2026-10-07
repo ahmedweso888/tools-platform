@@ -89,70 +89,57 @@ class QureoSolver:
             wait_until="domcontentloaded",
         )
 
-        self.page.wait_for_timeout(1500)
-
         print(f"🌐 صفحة الدخول: {self.page.url}", flush=True)
 
+        # ==============================================================
+        # اختيار زر Learning Login الصحيح.
+        #
+        # الزر المطلوب في صفحة Qureo هو:
+        #
+        # <button
+        #   type="button"
+        #   class="portal-selection-button portal-selection-button-secondary"
+        # >
+        #   Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم
+        # </button>
+        #
+        # لا نعتمد على ترتيب كل الأزرار في الصفحة.
+        # ==============================================================
+
         try:
-            clickables = self.page.locator(
-                "a:visible, "
-                "button:visible, "
-                "[role='button']:visible, "
-                "[onclick]:visible, "
-                ".portal-selection-button:visible, "
-                ".portal-selection-button-secondary:visible"
+            learning_button = self.page.locator(
+                "button.portal-selection-button.portal-selection-button-secondary"
             )
 
-            count = clickables.count()
+            learning_button.wait_for(
+                state="visible",
+                timeout=30000,
+            )
+
+            count = learning_button.count()
 
             print(
-                f"🔎 عدد العناصر القابلة للنقر: {count}",
+                f"🔎 زر Learning Login موجود: {count}",
                 flush=True,
             )
 
-            for i in range(count):
-                try:
-                    text = clickables.nth(i).inner_text().strip()
-                except Exception:
-                    text = ""
-
-                print(
-                    f"   🔘 العنصر {i + 1}: {text!r}",
-                    flush=True,
+            if count < 1:
+                raise RuntimeError(
+                    "لم يتم العثور على زر Learning Login."
                 )
 
-            target = clickables.filter(
-                has_text=re.compile(
-                    r"Go to Learning Login|انتقل إلى تسجيل الدخول للتعلم",
-                    re.IGNORECASE,
-                )
+            learning_button.first.click()
+
+            print(
+                "✅ تم الضغط على Go to Learning Login.",
+                flush=True,
             )
-
-            if target.count() > 0:
-                target.first.click()
-                print(
-                    "✅ تم الضغط على زر Go to Learning Login.",
-                    flush=True,
-                )
-            else:
-                if count < 2:
-                    raise RuntimeError(
-                        f"لم يتم العثور على زر تسجيل دخول التعلم. "
-                        f"عدد العناصر القابلة للنقر: {count}"
-                    )
-
-                clickables.nth(1).click()
-
-                print(
-                    "✅ تم الضغط على العنصر الثاني الخاص بتسجيل دخول التعلم.",
-                    flush=True,
-                )
 
         except Exception as e:
             raise RuntimeError(
-                "لم يتم العثور على الزر الثاني "
-                "'Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم' "
-                f"في Qureo. URL={self.page.url} | "
+                "لم يتم العثور على زر تسجيل دخول التعلم "
+                "'Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم'. "
+                f"URL={self.page.url} | "
                 f"TITLE={self.page.title()}"
             ) from e
 
