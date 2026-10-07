@@ -29,7 +29,6 @@ STUDENT_ID = ""
 PASSWORD = ""
 COURSES = ["Python", "JavaScript"]
 
-# خطّافات اختيارية تستخدمها الواجهة
 PROGRESS = None
 SHOULD_STOP = None
 
@@ -101,22 +100,95 @@ class QureoSolver:
 
         self.page = self.context.new_page()
 
+        # --------------------------------------------------------------
+        # مراقبة ملفات Qureo static assets
+        # --------------------------------------------------------------
+
+        def on_response(response):
+            try:
+                url = response.url
+                resource_type = response.request.resource_type
+                content_type = response.headers.get(
+                    "content-type",
+                    "",
+                )
+
+                if (
+                    "/assets/" in url
+                    or resource_type in {
+                        "script",
+                        "stylesheet",
+                    }
+                ):
+                    print(
+                        "📦 ASSET RESPONSE: "
+                        f"{response.status} | "
+                        f"{resource_type} | "
+                        f"{content_type} | "
+                        f"{url}",
+                        flush=True,
+                    )
+
+                    # أهم حالة بالنسبة للمشكلة الحالية:
+                    # JavaScript مطلوب كـ JS وليس HTML.
+                    if (
+                        resource_type == "script"
+                        and "javascript" not in content_type.lower()
+                        and "ecmascript" not in content_type.lower()
+                    ):
+                        print(
+                            "⚠️ SCRIPT MIME TYPE غير صحيح: "
+                            f"{content_type} | {url}",
+                            flush=True,
+                        )
+
+            except Exception:
+                pass
+
+        self.page.on(
+            "response",
+            on_response,
+        )
+
+        # --------------------------------------------------------------
+        # Console errors
+        # --------------------------------------------------------------
+
+        def on_console(msg):
+            try:
+                if msg.type in {
+                    "error",
+                    "warning",
+                }:
+                    print(
+                        f"🖥️ CONSOLE [{msg.type}]: "
+                        f"{msg.text}",
+                        flush=True,
+                    )
+            except Exception:
+                pass
+
         self.page.on(
             "console",
-            lambda msg: print(
-                f"🖥️ CONSOLE [{msg.type}]: {msg.text}",
-                flush=True,
-            )
-            if msg.type in {"error", "warning"}
-            else None,
+            on_console,
         )
+
+        # --------------------------------------------------------------
+        # Page JavaScript errors
+        # --------------------------------------------------------------
+
+        def on_page_error(exc):
+            try:
+                print(
+                    f"💥 PAGE ERROR: {exc}",
+                    flush=True,
+                )
+            except Exception:
+                pass
 
         self.page.on(
             "pageerror",
-            lambda exc: print(
-                f"💥 PAGE ERROR: {exc}",
-                flush=True,
-            ),
+            on_page_error,
         )
 
     # ------------------------------------------------------------------
@@ -211,11 +283,6 @@ class QureoSolver:
         )
 
     def _find_in_all_frames(self, selector):
-        """
-        يرجع أول locator موجود للـselector
-        في الصفحة أو أحد الـiframes.
-        """
-
         for frame in self.page.frames:
             try:
                 locator = frame.locator(selector)
@@ -263,12 +330,10 @@ class QureoSolver:
         password=None,
     ):
         """
-        تسجيل الدخول مع دعم حالتين:
-
-        1. ظهور زر Learning Login.
-        2. فتح نموذج الدخول مباشرة.
-
-        ويتم البحث في الصفحة وكل الـiframes.
+        يدعم:
+        1. زر Learning Login.
+        2. نموذج الدخول المباشر.
+        3. البحث داخل جميع الـiframes.
         """
 
         student_id = student_id or STUDENT_ID
@@ -285,7 +350,7 @@ class QureoSolver:
         )
 
         # --------------------------------------------------------------
-        # فتح صفحة الدخول
+        # فتح صفحة Qureo
         # --------------------------------------------------------------
 
         try:
@@ -303,7 +368,7 @@ class QureoSolver:
 
                 try:
                     print(
-                        f"📦 CONTENT-TYPE: "
+                        "📦 CONTENT-TYPE: "
                         f"{response.headers.get('content-type', '')}",
                         flush=True,
                     )
@@ -330,11 +395,10 @@ class QureoSolver:
         except Exception:
             pass
 
-        # نعطي JavaScript / hydration فرصة للعمل.
         self.page.wait_for_timeout(3000)
 
         # --------------------------------------------------------------
-        # أولًا: هل زر Learning Login موجود؟
+        # Learning Login
         # --------------------------------------------------------------
 
         learning_selector = (
@@ -385,8 +449,8 @@ class QureoSolver:
 
             except Exception as e:
                 print(
-                    f"⚠️ تعذر الضغط على زر Learning Login: "
-                    f"{e}",
+                    "⚠️ تعذر الضغط على زر "
+                    f"Learning Login: {e}",
                     flush=True,
                 )
 
@@ -402,7 +466,7 @@ class QureoSolver:
             )
 
         # --------------------------------------------------------------
-        # ثانيًا: البحث عن student_id في كل frames
+        # login form
         # --------------------------------------------------------------
 
         print(
@@ -433,10 +497,6 @@ class QureoSolver:
             flush=True,
         )
 
-        # --------------------------------------------------------------
-        # تحديد الـframe الذي يحتوي على الفورم
-        # --------------------------------------------------------------
-
         login_frame = None
 
         for frame in self.page.frames:
@@ -446,6 +506,7 @@ class QureoSolver:
                 ).count() > 0:
                     login_frame = frame
                     break
+
             except Exception:
                 continue
 
@@ -458,7 +519,7 @@ class QureoSolver:
         )
 
         # --------------------------------------------------------------
-        # إدخال بيانات الدخول
+        # fill credentials
         # --------------------------------------------------------------
 
         try:
@@ -474,7 +535,8 @@ class QureoSolver:
             self._print_page_diagnostics()
 
             raise RuntimeError(
-                f"تم العثور على الفورم لكن تعذر إدخال البيانات: {e}"
+                "تم العثور على الفورم لكن تعذر إدخال "
+                f"البيانات: {e}"
             ) from e
 
         print(
@@ -483,7 +545,7 @@ class QureoSolver:
         )
 
         # --------------------------------------------------------------
-        # زر Login
+        # submit
         # --------------------------------------------------------------
 
         login_button = None
@@ -532,7 +594,7 @@ class QureoSolver:
         )
 
         # --------------------------------------------------------------
-        # انتظار انتهاء عملية الدخول
+        # verify login
         # --------------------------------------------------------------
 
         try:
@@ -544,7 +606,6 @@ class QureoSolver:
             )
 
         except Exception:
-            # أحيانًا الفورم لا يختفي لكن الصفحة تنتقل.
             self.page.wait_for_timeout(2000)
 
             still_there = False
@@ -630,7 +691,7 @@ class QureoSolver:
         )
 
     # ------------------------------------------------------------------
-    # api helpers
+    # api
     # ------------------------------------------------------------------
 
     def _req(self, method, path, body=None):
@@ -799,13 +860,11 @@ class QureoSolver:
 
             if match:
                 data = self.api_get_json(
-                    f"/api/study/chapters/{match.group(1)}"
+                    f"/api/study/chapters/"
+                    f"{match.group(1)}"
                 )
 
-                if (
-                    data
-                    and data.get("section")
-                ):
+                if data and data.get("section"):
                     return data["section"]["id"]
 
             time.sleep(1)
@@ -905,13 +964,13 @@ class QureoSolver:
                 )
 
     # ------------------------------------------------------------------
-    # safe course inspection
+    # course inspection
     # ------------------------------------------------------------------
 
     def inspect_course(self):
         """
-        يجلب بنية المسار والفصول والأسئلة الموجودة
-        لأغراض التشخيص فقط، بدون إرسال إجابات للاختبارات.
+        يجلب بنية المسار وحالة الفصول للتشخيص والمتابعة.
+        لا يقوم بإرسال إجابات للاختبارات.
         """
 
         section_id = self.resolve_section_id()
@@ -963,6 +1022,7 @@ class QureoSolver:
                 )
 
             chapter_id = chapter["id"]
+
             name = chapter.get(
                 "name",
                 "",
