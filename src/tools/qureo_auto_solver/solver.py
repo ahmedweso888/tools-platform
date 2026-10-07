@@ -47,6 +47,62 @@ PROGRESS = None
 SHOULD_STOP = None
 
 
+# ----------------------------------------------------------------------
+# Optional Qureo proxy
+# ----------------------------------------------------------------------
+
+QUREO_PROXY_SERVER = os.getenv(
+    "QUREO_PROXY_SERVER",
+    "",
+).strip()
+
+QUREO_PROXY_USERNAME = os.getenv(
+    "QUREO_PROXY_USERNAME",
+    "",
+).strip()
+
+QUREO_PROXY_PASSWORD = os.getenv(
+    "QUREO_PROXY_PASSWORD",
+    "",
+)
+
+
+def build_qureo_proxy():
+    """
+    Builds Playwright proxy configuration from environment variables.
+
+    Required:
+        QUREO_PROXY_SERVER
+
+    Optional:
+        QUREO_PROXY_USERNAME
+        QUREO_PROXY_PASSWORD
+
+    Example:
+        QUREO_PROXY_SERVER=http://1.2.3.4:8080
+
+    Or:
+        QUREO_PROXY_SERVER=http://1.2.3.4:8080
+        QUREO_PROXY_USERNAME=myuser
+        QUREO_PROXY_PASSWORD=mypass
+    """
+
+    if not QUREO_PROXY_SERVER:
+        return None
+
+    proxy = {
+        "server": QUREO_PROXY_SERVER,
+    }
+
+    if QUREO_PROXY_USERNAME:
+        proxy["username"] = QUREO_PROXY_USERNAME
+
+    if QUREO_PROXY_PASSWORD:
+        proxy["password"] = QUREO_PROXY_PASSWORD
+
+    return proxy
+
+
 def emit_progress(
     course,
     done,
@@ -96,6 +152,8 @@ class QureoSolver:
         self.asset_results = []
         self.frontend_broken = False
 
+        self.proxy = build_qureo_proxy()
+
     # ------------------------------------------------------------------
     # browser
     # ------------------------------------------------------------------
@@ -108,9 +166,40 @@ class QureoSolver:
 
         self.playwright = sync_playwright().start()
 
+        if self.proxy:
+            print(
+                "🌍 Qureo Proxy: مفعّل",
+                flush=True,
+            )
+
+            print(
+                f"🌍 Proxy Server: "
+                f"{self.proxy.get('server', '')}",
+                flush=True,
+            )
+
+            if self.proxy.get("username"):
+                print(
+                    "🔐 Proxy Authentication: مفعّلة",
+                    flush=True,
+                )
+
+        else:
+            print(
+                "🌍 Qureo Proxy: غير مفعّل",
+                flush=True,
+            )
+
         try:
+            launch_options = {
+                "headless": self.headless,
+            }
+
+            if self.proxy:
+                launch_options["proxy"] = self.proxy
+
             self.browser = self.playwright.chromium.launch(
-                headless=self.headless,
+                **launch_options,
             )
 
             print(
@@ -121,7 +210,8 @@ class QureoSolver:
         except Exception as e:
             raise RuntimeError(
                 "تعذّر تشغيل Chromium على Railway. "
-                "تأكد من تثبيت Playwright Chromium."
+                "تأكد من تثبيت Playwright Chromium "
+                "وصحة إعدادات الـ Proxy إن وُجدت."
             ) from e
 
         self.context = self.browser.new_context(
@@ -283,6 +373,99 @@ class QureoSolver:
         self.page.on(
             "pageerror",
             on_page_error,
+        )
+
+        # --------------------------------------------------------------
+        # proxy/IP diagnostic
+        # --------------------------------------------------------------
+
+        self._check_outbound_ip()
+
+    # ------------------------------------------------------------------
+    # outbound IP diagnostic
+    # ------------------------------------------------------------------
+
+    def _check_outbound_ip(self):
+        """
+        Checks the public IP used by the Playwright request context.
+
+        This is diagnostic only. It does not expose proxy credentials.
+        """
+
+        print(
+            "\n========== OUTBOUND IP TEST ==========",
+            flush=True,
+        )
+
+        try:
+            response = self.context.request.get(
+                "https://api.ipify.org?format=json",
+                timeout=20000,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": (
+                        "Mozilla/5.0 "
+                        "(Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) "
+                        "Chrome/142.0.0.0 Safari/537.36"
+                    ),
+                },
+            )
+
+            print(
+                f"STATUS: {response.status}",
+                flush=True,
+            )
+
+            content_type = (
+                response.headers.get(
+                    "content-type",
+                    "",
+                )
+                or ""
+            )
+
+            print(
+                f"CONTENT-TYPE: {content_type}",
+                flush=True,
+            )
+
+            try:
+                data = response.json()
+
+                ip = data.get("ip", "")
+
+                if ip:
+                    print(
+                        f"🌍 OUTBOUND IP: {ip}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"BODY: {str(data)[:500]}",
+                        flush=True,
+                    )
+
+            except Exception:
+                try:
+                    print(
+                        "BODY: "
+                        f"{response.text()[:500]}",
+                        flush=True,
+                    )
+                except Exception:
+                    pass
+
+        except Exception as e:
+            print(
+                f"❌ OUTBOUND IP TEST FAILED: {e}",
+                flush=True,
+            )
+
+        print(
+            "========== END OUTBOUND IP TEST ==========\n",
+            flush=True,
         )
 
     # ------------------------------------------------------------------
@@ -1805,6 +1988,3 @@ if __name__ == "__main__":
     QureoSolver(
         headless=True,
     ).run()
-
-
-
