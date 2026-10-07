@@ -245,7 +245,7 @@ class QureoSolver:
         )
 
         # ----------------------------------------------------
-        # فتح صفحة الدخول
+        # فتح صفحة البورتال
         # ----------------------------------------------------
 
         self.page.goto(
@@ -268,24 +268,70 @@ class QureoSolver:
         )
 
         # ----------------------------------------------------
-        # الزر الإجباري لاختيار حساب الطالب
+        # الزر المطلوب تحديدًا:
+        #
+        # Go to Learning Login
+        # /انتقل إلى تسجيل الدخول للتعلم
+        #
+        # لا نستخدم الزر العام هنا.
         # ----------------------------------------------------
 
-        secondary_selector = (
-            ".portal-selection-button-secondary"
+        learning_login = None
+
+        exact_text = (
+            "Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم"
         )
 
-        try:
-            secondary = self.page.locator(
-                secondary_selector
-            ).first
+        selectors = [
+            f"text={exact_text}",
+            f"button:has-text('{exact_text}')",
+            f"a:has-text('{exact_text}')",
+        ]
 
-            secondary.wait_for(
-                state="visible",
-                timeout=20000,
-            )
+        for selector in selectors:
+            try:
+                candidate = self.page.locator(
+                    selector
+                ).first
 
-        except Exception as exc:
+                candidate.wait_for(
+                    state="visible",
+                    timeout=5000,
+                )
+
+                learning_login = candidate
+                break
+
+            except Exception:
+                continue
+
+        # ----------------------------------------------------
+        # لو النص موجود مع مسافات/فصل مختلف،
+        # نستخدم regex على النص الظاهر.
+        # ----------------------------------------------------
+
+        if learning_login is None:
+            try:
+                candidate = self.page.get_by_text(
+                    re.compile(
+                        r"Go\s*to\s*Learning\s*Login"
+                        r".*"
+                        r"انتقل\s*إلى\s*تسجيل\s*الدخول\s*للتعلم",
+                        re.IGNORECASE,
+                    )
+                ).first
+
+                candidate.wait_for(
+                    state="visible",
+                    timeout=10000,
+                )
+
+                learning_login = candidate
+
+            except Exception:
+                pass
+
+        if learning_login is None:
 
             current_url = self.page.url
 
@@ -309,58 +355,74 @@ class QureoSolver:
                     body,
                 ).strip()
 
-                if len(body) > 1500:
-                    body = body[:1500]
+                if len(body) > 2500:
+                    body = body[:2500]
 
             except Exception:
                 body = ""
 
             raise RuntimeError(
-                "زر اختيار حساب الطالب "
-                "لم يظهر في Qureo. "
-                f"SELECTOR={secondary_selector} | "
+                "لم يظهر زر "
+                "'Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم' "
+                "في Qureo. "
                 f"URL={current_url} | "
                 f"TITLE={title} | "
                 f"PAGE={body}"
-            ) from exc
+            )
 
         print(
-            "🖱️ جاري الضغط على زر اختيار حساب الطالب...",
+            "🖱️ جاري الضغط على "
+            "'Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم'...",
             flush=True,
         )
 
         try:
-            secondary.scroll_into_view_if_needed(
+            learning_login.scroll_into_view_if_needed(
                 timeout=10000
             )
         except Exception:
             pass
 
+        # ----------------------------------------------------
+        # الضغط على الزر المطلوب.
+        # لو الضغط يعمل navigation ننتظره،
+        # ولو يعمل JavaScript بدون navigation نكمل عادي.
+        # ----------------------------------------------------
+
         try:
-            secondary.click(
+            with self.page.expect_navigation(
+                wait_until="domcontentloaded",
                 timeout=15000,
-                force=True,
-            )
+            ):
+                learning_login.click(
+                    timeout=15000
+                )
 
-        except Exception as exc:
+        except Exception:
 
-            raise RuntimeError(
-                "تعذّر الضغط على "
-                ".portal-selection-button-secondary "
-                "في Qureo."
-            ) from exc
+            try:
+                learning_login.click(
+                    timeout=15000,
+                    force=True,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "تعذّر الضغط على زر "
+                    "'Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم'."
+                ) from exc
 
         print(
-            "✅ تم الضغط على زر اختيار حساب الطالب.",
+            "✅ تم الضغط على Go to Learning Login.",
             flush=True,
         )
 
         # ----------------------------------------------------
-        # إعطاء Qureo فرصة لتنفيذ JavaScript
-        # وتغيير الصفحة/إظهار نموذج الدخول
+        # انتظار الصفحة الجديدة / JavaScript
         # ----------------------------------------------------
 
-        self.page.wait_for_timeout(1500)
+        self.page.wait_for_timeout(
+            1500
+        )
 
         try:
             self.page.wait_for_load_state(
@@ -379,13 +441,14 @@ class QureoSolver:
             pass
 
         print(
-            f"📄 بعد اختيار الحساب: {self.page.url}",
+            f"📄 بعد Go to Learning Login: "
+            f"{self.page.url}",
             flush=True,
         )
 
-        # ----------------------------------------------------
-        # انتظار نموذج تسجيل الدخول
-        # ----------------------------------------------------
+        # ====================================================
+        # LOGIN FORM
+        # ====================================================
 
         student = self.page.locator(
             "#student_id"
@@ -421,14 +484,15 @@ class QureoSolver:
                     body,
                 ).strip()
 
-                if len(body) > 2000:
-                    body = body[:2000]
+                if len(body) > 2500:
+                    body = body[:2500]
 
             except Exception:
                 body = ""
 
             raise RuntimeError(
-                "تم الضغط على زر اختيار حساب الطالب "
+                "تم الضغط على "
+                "'Go to Learning Login' "
                 "لكن نموذج تسجيل الدخول لم يظهر. "
                 f"URL={current_url} | "
                 f"TITLE={title} | "
