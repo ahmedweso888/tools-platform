@@ -1,89 +1,38 @@
+
 import json
 import os
 import re
 import sys
 import time
-
 from playwright.sync_api import sync_playwright
 
-
-# ============================================================
-# UTF-8
-# ============================================================
-
-if sys.stdout.encoding != "utf-8":
+if sys.stdout.encoding != 'utf-8':
     try:
-        sys.stdout.reconfigure(
-            encoding="utf-8",
-            errors="replace",
-        )
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     except Exception:
         pass
 
+PORTAL_URL = "https://me-portal.qureo.education/login"
+PORTAL_HOME = "https://me-portal.qureo.education/"
+BASE = "https://me-tp.qureo.education"
+JSON_HEADERS = {"Content-Type": "application/json"}
 
-# ============================================================
-# CONFIG
-# ============================================================
-
-PORTAL_URL = os.getenv(
-    "QUREO_PORTAL_LOGIN_URL",
-    "https://me-portal.qureo.education/login",
-)
-
-PORTAL_HOME = os.getenv(
-    "QUREO_PORTAL_HOME_URL",
-    "https://me-portal.qureo.education/",
-)
-
-BASE = os.getenv(
-    "QUREO_BASE_URL",
-    "https://me-tp.qureo.education",
-).rstrip("/")
-
-JSON_HEADERS = {
-    "Content-Type": "application/json",
-}
-
-SCRIPT_DIR = os.path.dirname(
-    os.path.abspath(__file__)
-)
-
-ANSWER_FILE = os.path.join(
-    SCRIPT_DIR,
-    "answers.json",
-)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ANSWER_FILE = os.path.join(SCRIPT_DIR, "answers.json")
 
 STUDENT_ID = ""
 PASSWORD = ""
+COURSES = ["Python", "JavaScript"]
 
-COURSES = [
-    "Python",
-    "JavaScript",
-]
-
-
-# ============================================================
-# OPTIONAL HOOKS
-# ============================================================
-
-PROGRESS = None
-SHOULD_STOP = None
+# خطّافات اختيارية تستخدمها الواجهة: التقدّم + طلب الإيقاف
+PROGRESS = None      # دالة(course, done, total, label)
+SHOULD_STOP = None   # دالة() -> bool
 
 
-def emit_progress(
-    course,
-    done,
-    total,
-    label="",
-):
+def emit_progress(course, done, total, label=""):
     if PROGRESS:
         try:
-            PROGRESS(
-                course,
-                done,
-                total,
-                label,
-            )
+            PROGRESS(course, done, total, label)
         except Exception:
             pass
 
@@ -91,696 +40,162 @@ def emit_progress(
 def stop_requested():
     if SHOULD_STOP:
         try:
-            return bool(
-                SHOULD_STOP()
-            )
+            return bool(SHOULD_STOP())
         except Exception:
             return False
-
     return False
 
 
-# ============================================================
-# SOLVER
-# ============================================================
-
 class QureoSolver:
-
-    def __init__(
-        self,
-        headless=False,
-        courses=None,
-    ):
+    def __init__(self, headless=False, courses=None):
         self.headless = headless
-
-        self.courses = (
-            courses
-            if courses
-            else COURSES
-        )
-
+        self.courses = courses or COURSES
         self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
-
-        self.answers = (
-            self._load_answers()
-        )
-
+        self.answers = self._load_answers()
         self.current_course = ""
 
-    # ========================================================
-    # BROWSER
-    # ========================================================
-
+    # ------------------------------------------------------------------ setup
     def start(self):
-        print(
-            "🚀 جاري تشغيل المتصفح...",
-            flush=True,
-        )
+        print("🚀 جاري تشغيل المتصفح...", flush=True)
+        self.playwright = sync_playwright().start()
 
-        self.playwright = (
-            sync_playwright().start()
-        )
-
-        last_error = None
-
-        for channel in (
-            "chrome",
-            "msedge",
-        ):
+        # نفس تشغيل السولفر الأصلي: Chrome ثم Edge
+        last_err = None
+        for channel in ("chrome", "msedge"):
             try:
-                self.browser = (
-                    self.playwright.chromium.launch(
-                        headless=self.headless,
-                        channel=channel,
-                    )
+                self.browser = self.playwright.chromium.launch(
+                    headless=self.headless,
+                    channel=channel,
                 )
-
-                print(
-                    f"🌐 تم تشغيل المتصفح: {channel}",
-                    flush=True,
-                )
-
+                print(f"🌐 تم تشغيل المتصفح: {channel}", flush=True)
                 break
-
-            except Exception as exc:
-                last_error = exc
+            except Exception as e:
+                last_err = e
 
         if self.browser is None:
-            try:
-                self.browser = (
-                    self.playwright.chromium.launch(
-                        headless=self.headless,
-                    )
-                )
-
-                print(
-                    "🌐 تم تشغيل Playwright Chromium.",
-                    flush=True,
-                )
-
-            except Exception as exc:
-                last_error = exc
-
-                raise RuntimeError(
-                    "تعذّر تشغيل Chromium على Railway. "
-                    "تأكد من تثبيت Playwright Chromium."
-                ) from last_error
-
-        self.context = (
-            self.browser.new_context(
-                viewport={
-                    "width": 1280,
-                    "height": 800,
-                }
-            )
-        )
-
-        self.page = (
-            self.context.new_page()
-        )
-
-        self.page.set_default_timeout(
-            30000
-        )
-
-        self.page.set_default_navigation_timeout(
-            60000
-        )
-
-    # ========================================================
-    # LOGIN
-    # ========================================================
-
-    def login(
-        self,
-        student_id=None,
-        password=None,
-    ):
-        student_id = (
-            student_id
-            or STUDENT_ID
-        )
-
-        password = (
-            password
-            or PASSWORD
-        )
-
-        if not student_id:
             raise RuntimeError(
-                "اسم المستخدم فارغ."
-            )
+                "تعذّر تشغيل المتصفح — تأكد من تثبيت Google Chrome أو Microsoft Edge."
+            ) from last_err
 
-        if not password:
-            raise RuntimeError(
-                "كلمة المرور فارغة."
-            )
-
-        print(
-            "🔑 جاري تسجيل الدخول تلقائيًا...",
-            flush=True,
+        self.context = self.browser.new_context(
+            viewport={"width": 1280, "height": 800}
         )
+        self.page = self.context.new_page()
 
-        # ----------------------------------------------------
-        # فتح صفحة البورتال أولًا
-        # ----------------------------------------------------
+    def login(self, student_id=None, password=None):
+        """تسجيل الدخول تلقائيًا إلى البوابة بالبيانات المُمرَّرة (أو الافتراضية)."""
+        student_id = student_id or STUDENT_ID
+        password = password or PASSWORD
+
+        if not student_id or not password:
+            raise RuntimeError("لازم تدخل اسم المستخدم وكلمة المرور.")
+
+        print("🔑 جاري تسجيل الدخول تلقائيًا...", flush=True)
 
         self.page.goto(
             PORTAL_URL,
             wait_until="domcontentloaded",
-            timeout=60000,
         )
 
-        try:
-            self.page.wait_for_load_state(
-                "networkidle",
-                timeout=15000,
-            )
-        except Exception:
-            pass
+        print(f"🌐 صفحة الدخول: {self.page.url}", flush=True)
 
-        print(
-            f"🌐 صفحة الدخول: {self.page.url}",
-            flush=True,
-        )
-
-        # ----------------------------------------------------
+        # ==============================================================
+        # Qureo يعرض زرين في صفحة اختيار البوابة.
+        # المطلوب هو الزر الثاني تحديدًا.
+        #
         # مهم:
-        #
-        # Qureo يعرض زرين في صفحة البورتال.
-        # المطلوب هو الزر الثاني.
-        #
-        # لا نحاول اختيار النص قبل فتح الصفحة.
-        # ولا نضع هذا الجزء داخل start().
-        # ----------------------------------------------------
+        # لا نبحث عن الزر قبل goto().
+        # ولا نعتمد على class غير موجود في الصفحة.
+        # ==============================================================
 
-        learning_login = None
-
-        # المحاولة الأولى:
-        # نستخدم مجموعة أزرار البورتال ونأخذ الثاني مباشرة.
         try:
-            portal_buttons = self.page.locator(
-                ".portal-selection-button-secondary"
-            )
+            self.page.wait_for_timeout(500)
 
-            count = portal_buttons.count()
+            buttons = self.page.locator("button:visible")
+            count = buttons.count()
 
-            print(
-                f"🔎 عدد أزرار اختيار البورتال: {count}",
-                flush=True,
-            )
+            print(f"🔎 عدد الأزرار الظاهرة: {count}", flush=True)
 
-            if count >= 2:
-                candidate = portal_buttons.nth(1)
-
-                if candidate.is_visible(
-                    timeout=5000
-                ):
-                    learning_login = candidate
-
-        except Exception:
-            learning_login = None
-
-        # ----------------------------------------------------
-        # fallback:
-        # أي عناصر تحمل portal-selection-button
-        # ونختار ثاني عنصر ظاهر.
-        # ----------------------------------------------------
-
-        if learning_login is None:
-            try:
-                portal_buttons = self.page.locator(
-                    "[class*='portal-selection-button']"
-                )
-
-                count = portal_buttons.count()
+            for i in range(count):
+                try:
+                    text = buttons.nth(i).inner_text().strip()
+                except Exception:
+                    text = ""
 
                 print(
-                    f"🔎 عدد عناصر portal-selection-button: {count}",
+                    f"   🔘 الزر {i + 1}: {text!r}",
                     flush=True,
                 )
 
-                visible_buttons = []
-
-                for index in range(count):
-                    try:
-                        candidate = portal_buttons.nth(
-                            index
-                        )
-
-                        if candidate.is_visible(
-                            timeout=1000
-                        ):
-                            visible_buttons.append(
-                                candidate
-                            )
-
-                    except Exception:
-                        continue
-
-                if len(visible_buttons) >= 2:
-                    learning_login = (
-                        visible_buttons[1]
-                    )
-
-            except Exception:
-                learning_login = None
-
-        # ----------------------------------------------------
-        # fallback أخير:
-        # ابحث عن الزرين الظاهرين في الصفحة،
-        # ونستخدم الثاني إذا كان له نص متعلق بتسجيل الدخول.
-        # ----------------------------------------------------
-
-        if learning_login is None:
-            try:
-                candidates = self.page.locator(
-                    "button, a, [role='button']"
+            if count < 2:
+                raise RuntimeError(
+                    f"لم يتم العثور على الزر الثاني. "
+                    f"عدد الأزرار الظاهرة: {count}"
                 )
 
-                count = candidates.count()
+            # الزر الثاني فقط — index 1
+            buttons.nth(1).click()
 
-                visible_candidates = []
+            print(
+                "✅ تم الضغط على الزر الثاني الخاص بتسجيل دخول التعلم.",
+                flush=True,
+            )
 
-                for index in range(count):
-                    try:
-                        candidate = candidates.nth(
-                            index
-                        )
-
-                        if not candidate.is_visible(
-                            timeout=500
-                        ):
-                            continue
-
-                        text = ""
-
-                        try:
-                            text = candidate.inner_text(
-                                timeout=500
-                            )
-                        except Exception:
-                            pass
-
-                        text = re.sub(
-                            r"\s+",
-                            " ",
-                            text,
-                        ).strip()
-
-                        visible_candidates.append(
-                            candidate
-                        )
-
-                        print(
-                            f"🔘 زر ظاهر [{len(visible_candidates)}]: "
-                            f"{text[:150]}",
-                            flush=True,
-                        )
-
-                    except Exception:
-                        continue
-
-                # المطلوب هو الزر الثاني.
-                if len(visible_candidates) >= 2:
-                    second_button = (
-                        visible_candidates[1]
-                    )
-
-                    second_text = ""
-
-                    try:
-                        second_text = re.sub(
-                            r"\s+",
-                            " ",
-                            second_button.inner_text(
-                                timeout=1000
-                            ),
-                        ).strip()
-                    except Exception:
-                        pass
-
-                    # نستخدم الزر الثاني كما طلب المستخدم.
-                    learning_login = second_button
-
-                    print(
-                        "🎯 تم تحديد الزر الثاني الظاهر "
-                        f"({second_text[:150]}).",
-                        flush=True,
-                    )
-
-            except Exception:
-                learning_login = None
-
-        # ----------------------------------------------------
-        # لو لم نجد الزر الثاني
-        # ----------------------------------------------------
-
-        if learning_login is None:
-
-            current_url = self.page.url
-
-            try:
-                title = self.page.title()
-            except Exception:
-                title = ""
-
-            try:
-                body = (
-                    self.page.locator(
-                        "body"
-                    ).inner_text(
-                        timeout=5000
-                    )
-                )
-
-                body = re.sub(
-                    r"\s+",
-                    " ",
-                    body,
-                ).strip()
-
-                if len(body) > 2500:
-                    body = body[:2500]
-
-            except Exception:
-                body = ""
-
+        except Exception as e:
             raise RuntimeError(
                 "لم يتم العثور على الزر الثاني "
                 "'Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم' "
-                "في Qureo. "
-                f"URL={current_url} | "
-                f"TITLE={title} | "
-                f"PAGE={body}"
-            )
+                f"في Qureo. URL={self.page.url} | "
+                f"TITLE={self.page.title()}"
+            ) from e
 
-        # ----------------------------------------------------
-        # الضغط على الزر الثاني
-        # ----------------------------------------------------
-
-        print(
-            "🖱️ جاري الضغط على الزر الثاني "
-            "'Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم'...",
-            flush=True,
+        # بعد اختيار Learning Login تظهر حقول الدخول
+        self.page.wait_for_selector(
+            "#student_id",
+            timeout=30000,
         )
 
-        try:
-            learning_login.scroll_into_view_if_needed(
-                timeout=10000
-            )
-        except Exception:
-            pass
-
-        try:
-            learning_login.click(
-                timeout=15000
-            )
-
-        except Exception:
-            try:
-                learning_login.click(
-                    timeout=15000,
-                    force=True,
-                )
-            except Exception as exc:
-                raise RuntimeError(
-                    "تعذّر الضغط على الزر الثاني "
-                    "'Go to Learning Login /انتقل إلى تسجيل الدخول للتعلم'."
-                ) from exc
-
-        print(
-            "✅ تم الضغط على الزر الثاني.",
-            flush=True,
+        self.page.fill(
+            "#student_id",
+            student_id,
         )
 
-        # ----------------------------------------------------
-        # انتظار الصفحة الجديدة / JavaScript
-        # ----------------------------------------------------
-
-        self.page.wait_for_timeout(
-            1500
+        self.page.fill(
+            "#password",
+            password,
         )
 
-        try:
-            self.page.wait_for_load_state(
-                "domcontentloaded",
-                timeout=10000,
-            )
-        except Exception:
-            pass
+        self.page.locator(
+            "button.login-button"
+        ).first.click()
 
-        try:
-            self.page.wait_for_load_state(
-                "networkidle",
-                timeout=10000,
-            )
-        except Exception:
-            pass
-
-        print(
-            f"📄 بعد الضغط على الزر الثاني: "
-            f"{self.page.url}",
-            flush=True,
-        )
-
-        # ====================================================
-        # LOGIN FORM
-        # ====================================================
-
-        student = self.page.locator(
-            "#student_id"
-        )
-
-        try:
-            student.wait_for(
-                state="visible",
-                timeout=30000,
-            )
-
-        except Exception as exc:
-
-            current_url = self.page.url
-
-            try:
-                title = self.page.title()
-            except Exception:
-                title = ""
-
-            try:
-                body = (
-                    self.page.locator(
-                        "body"
-                    ).inner_text(
-                        timeout=5000
-                    )
-                )
-
-                body = re.sub(
-                    r"\s+",
-                    " ",
-                    body,
-                ).strip()
-
-                if len(body) > 2500:
-                    body = body[:2500]
-
-            except Exception:
-                body = ""
-
-            raise RuntimeError(
-                "تم الضغط على "
-                "'Go to Learning Login' "
-                "لكن نموذج تسجيل الدخول لم يظهر. "
-                f"URL={current_url} | "
-                f"TITLE={title} | "
-                f"PAGE={body}"
-            ) from exc
-
-        print(
-            "✅ ظهر نموذج تسجيل الدخول.",
-            flush=True,
-        )
-
-        # ====================================================
-        # FILL CREDENTIALS
-        # ====================================================
-
-        student.fill(
-            student_id
-        )
-
-        password_input = self.page.locator(
-            "#password"
-        )
-
-        password_input.wait_for(
-            state="visible",
-            timeout=10000,
-        )
-
-        password_input.fill(
-            password
-        )
-
-        print(
-            "✍️ تم إدخال بيانات الحساب.",
-            flush=True,
-        )
-
-        # ====================================================
-        # LOGIN BUTTON
-        # ====================================================
-
-        login_button = None
-
-        button_selectors = [
-            "button.login-button",
-            "button[type='submit']",
-            "input[type='submit']",
-        ]
-
-        for selector in button_selectors:
-
-            try:
-                candidate = self.page.locator(
-                    selector
-                ).first
-
-                candidate.wait_for(
-                    state="visible",
-                    timeout=3000,
-                )
-
-                login_button = candidate
-                break
-
-            except Exception:
-                continue
-
-        if login_button is None:
-            raise RuntimeError(
-                "لم يتم العثور على زر تسجيل الدخول."
-            )
-
-        print(
-            "🖱️ جاري الضغط على تسجيل الدخول...",
-            flush=True,
-        )
-
-        login_button.click(
-            timeout=15000
-        )
-
-        # ====================================================
-        # LOGIN RESULT
-        # ====================================================
-
-        success = False
-
+        # نتحقق من النجاح باختفاء نموذج الدخول
+        # الموقع مش بيغيّر الرابط بعد الدخول
         try:
             self.page.wait_for_selector(
                 "#student_id",
                 state="detached",
                 timeout=30000,
             )
-
-            success = True
-
         except Exception:
-            pass
-
-        if not success:
-
-            try:
-                if not self.page.locator(
-                    "#student_id"
-                ).is_visible(
-                    timeout=3000
-                ):
-                    success = True
-
-            except Exception:
-                pass
-
-        if not success:
-
-            try:
-                current_url = (
-                    self.page.url.lower()
-                )
-
-                if (
-                    "login" not in current_url
-                    and "auth" not in current_url
-                ):
-                    success = True
-
-            except Exception:
-                pass
-
-        if not success:
-
-            current_url = self.page.url
-
-            try:
-                title = self.page.title()
-            except Exception:
-                title = ""
-
-            try:
-                body = (
-                    self.page.locator(
-                        "body"
-                    ).inner_text(
-                        timeout=5000
-                    )
-                )
-
-                body = re.sub(
-                    r"\s+",
-                    " ",
-                    body,
-                ).strip()
-
-                if len(body) > 2000:
-                    body = body[:2000]
-
-            except Exception:
-                body = ""
-
             raise RuntimeError(
-                "فشل تسجيل الدخول — "
-                "تأكد من اسم المستخدم وكلمة المرور. "
-                f"URL={current_url} | "
-                f"TITLE={title} | "
-                f"PAGE={body}"
+                "فشل تسجيل الدخول — تأكد من اسم المستخدم وكلمة المرور."
             )
 
-        time.sleep(1)
+        time.sleep(0.4)
 
-        print(
-            "✅ تم تسجيل الدخول.",
-            flush=True,
-        )
-
-    # ========================================================
-    # COURSE
-    # ========================================================
+        print("✅ تم تسجيل الدخول.", flush=True)
 
     def enter_course(self, name):
-        print(
-            f"📥 جاري الدخول إلى مسار {name}...",
-            flush=True,
-        )
+        """اختيار مسار معيّن من صفحة البوابة."""
+        print(f"📥 جاري الدخول إلى مسار {name}...", flush=True)
 
         self.page.goto(
             PORTAL_HOME,
             wait_until="domcontentloaded",
-            timeout=60000,
         )
 
         self.page.wait_for_selector(
@@ -800,32 +215,20 @@ class QureoSolver:
         time.sleep(0.8)
 
         print(
-            f"✅ تم الدخول إلى مسار {name}: "
-            f"{self.page.url}",
+            f"✅ تم الدخول إلى مسار {name}: {self.page.url}",
             flush=True,
         )
 
-    # ========================================================
-    # API
-    # ========================================================
-
-    def _req(
-        self,
-        method,
-        path,
-        body=None,
-    ):
+    # -------------------------------------------------------------------- api
+    def _req(self, method, path, body=None):
         url = BASE + path
-
         req = self.context.request
 
         if method == "GET":
             return req.get(url)
 
         data = json.dumps(
-            body
-            if body is not None
-            else {}
+            body if body is not None else {}
         )
 
         if method == "PUT":
@@ -844,28 +247,18 @@ class QureoSolver:
 
         raise ValueError(method)
 
-    def api_get_json(
-        self,
-        path,
-        default=None,
-    ):
-        response = self._req(
-            "GET",
-            path,
-        )
+    def api_get_json(self, path, default=None):
+        r = self._req("GET", path)
 
-        if response.status != 200:
+        if r.status != 200:
             return default
 
         try:
-            return response.json()
+            return r.json()
         except Exception:
             return default
 
-    # ========================================================
-    # PARALLEL FETCH
-    # ========================================================
-
+    # إرسال عدة طلبات متوازية من داخل الصفحة (أسرع بكتير من التسلسل)
     _FETCH_JS = """
     async (reqs) => {
         const out = new Array(reqs.length);
@@ -875,26 +268,16 @@ class QureoSolver:
                 try {
                     const opts = {
                         method: r.method,
-                        credentials: "include",
+                        credentials: 'include',
                         headers: {}
                     };
 
-                    if (
-                        r.body !== null &&
-                        r.body !== undefined
-                    ) {
-                        opts.headers[
-                            "Content-Type"
-                        ] = "application/json";
-
-                        opts.body =
-                            JSON.stringify(r.body);
+                    if (r.body !== null && r.body !== undefined) {
+                        opts.headers['Content-Type'] = 'application/json';
+                        opts.body = JSON.stringify(r.body);
                     }
 
-                    const res = await fetch(
-                        r.path,
-                        opts
-                    );
+                    const res = await fetch(r.path, opts);
 
                     let data = null;
 
@@ -906,7 +289,6 @@ class QureoSolver:
                         status: res.status,
                         data: data
                     };
-
                 } catch (e) {
                     out[i] = {
                         status: 0,
@@ -922,6 +304,7 @@ class QureoSolver:
     """
 
     def fetch_many(self, reqs):
+        """يرسل قائمة طلبات متوازية ويعيد النتائج بنفس الترتيب."""
         if not reqs:
             return []
 
@@ -930,19 +313,14 @@ class QureoSolver:
             reqs,
         )
 
-    # ========================================================
-    # DISCOVERY
-    # ========================================================
-
+    # -------------------------------------------------------------- discovery
     def _section_from_course(self):
         me = self.api_get_json(
             "/api/study/students/me",
             {},
         ) or {}
 
-        code = me.get(
-            "course_code"
-        )
+        code = me.get("course_code")
 
         if not code:
             return None
@@ -952,62 +330,39 @@ class QureoSolver:
             {},
         ) or {}
 
-        basic = (
-            course.get(
-                "basic_section"
-            )
-            or {}
-        )
+        basic = course.get("basic_section") or {}
 
         return basic.get("id")
 
     def resolve_section_id(self):
-        deadline = (
-            time.time() + 120
-        )
+        deadline = time.time() + 120
 
         while time.time() < deadline:
-
-            sid = (
-                self._section_from_course()
-            )
+            sid = self._section_from_course()
 
             if sid:
                 return sid
 
-            match = re.search(
+            m = re.search(
                 r"/section/(\d+)",
                 self.page.url,
             )
 
-            if match:
-                return int(
-                    match.group(1)
-                )
+            if m:
+                return int(m.group(1))
 
-            match = re.search(
+            m = re.search(
                 r"/chapter/(\d+)",
                 self.page.url,
             )
 
-            if match:
+            if m:
                 data = self.api_get_json(
-                    f"/api/study/chapters/"
-                    f"{match.group(1)}"
+                    f"/api/study/chapters/{m.group(1)}"
                 )
 
-                if (
-                    data
-                    and data.get("section")
-                ):
-                    return data[
-                        "section"
-                    ]["id"]
-
-            if stop_requested():
-                raise RuntimeError(
-                    "تم إيقاف التشغيل بواسطة المستخدم"
-                )
+                if data and data.get("section"):
+                    return data["section"]["id"]
 
             time.sleep(1)
 
@@ -1015,24 +370,19 @@ class QureoSolver:
             "تعذّر تحديد القسم الحالي."
         )
 
-    # ========================================================
-    # LECTURES
-    # ========================================================
-
+    # --------------------------------------------------------------- lectures
     def complete_lecture(self, lid):
         self._req(
             "PUT",
-            f"/api/study/students/"
-            f"lectures/{lid}",
+            f"/api/study/students/lectures/{lid}",
         )
 
-        response = self._req(
+        r = self._req(
             "PUT",
-            f"/api/study/students/"
-            f"lectures/{lid}/complete",
+            f"/api/study/students/lectures/{lid}/complete",
         )
 
-        return response.status == 200
+        return r.status == 200
 
     def complete_chapter_lectures(
         self,
@@ -1041,44 +391,35 @@ class QureoSolver:
         progress=None,
     ):
         if progress is None:
-            progress = (
-                self.api_get_json(
-                    f"/api/study/students/"
-                    f"chapters/{cid}/lectures",
-                    [],
-                )
-                or []
-            )
+            progress = self.api_get_json(
+                f"/api/study/students/chapters/{cid}/lectures",
+                [],
+            ) or []
 
         if chapter is None:
-            chapter = (
-                self.api_get_json(
-                    f"/api/study/chapters/{cid}",
-                    {},
-                )
-                or {}
-            )
+            chapter = self.api_get_json(
+                f"/api/study/chapters/{cid}",
+                {},
+            ) or {}
 
         done = {
-            item.get("lecture_id")
-            for item in progress
-            if item.get("completed_at")
+            p.get("lecture_id")
+            for p in progress
+            if p.get("completed_at")
         }
 
         todo = [
-            lecture
-            for lecture in chapter.get(
-                "lectures",
-                [],
-            )
-            if lecture["id"] not in done
+            lec
+            for lec in chapter.get("lectures", [])
+            if lec["id"] not in done
         ]
 
         if not todo:
             return
 
-        for lecture in todo:
-
+        # المحاضرات لها ترتيب إجباري على السيرفر:
+        # start ثم complete لكل واحدة بالتتابع
+        for lec in todo:
             if stop_requested():
                 raise RuntimeError(
                     "تم إيقاف التشغيل بواسطة المستخدم"
@@ -1086,93 +427,68 @@ class QureoSolver:
 
             self._req(
                 "PUT",
-                f"/api/study/students/"
-                f"lectures/{lecture['id']}",
+                f"/api/study/students/lectures/{lec['id']}",
                 {},
             )
 
-            response = self._req(
+            r = self._req(
                 "PUT",
-                f"/api/study/students/"
-                f"lectures/{lecture['id']}/complete",
+                f"/api/study/students/lectures/{lec['id']}/complete",
                 {},
             )
 
-            if response.status == 200:
+            if r.status == 200:
                 print(
-                    f"   📗 محاضرة "
-                    f"{lecture.get('seq')}: "
-                    f"{lecture.get('title', '')} — تم",
+                    f"   📗 محاضرة {lec.get('seq')}: "
+                    f"{lec.get('title', '')} — تم",
                     flush=True,
                 )
             else:
                 print(
                     f"   ⚠️ تعذّر إكمال المحاضرة "
-                    f"{lecture['id']} "
-                    f"({response.status})",
+                    f"{lec['id']} ({r.status})",
                     flush=True,
                 )
 
-    # ========================================================
-    # TESTS
-    # ========================================================
-
+    # ------------------------------------------------------------------ tests
     def _start_test(self, cid):
         return self._req(
             "PUT",
-            f"/api/study/students/"
-            f"chapters/{cid}/test",
+            f"/api/study/students/chapters/{cid}/test",
         ).status
 
-    def _result_path(
-        self,
-        cid,
-        test_type,
-    ):
+    def _result_path(self, cid, test_type):
         if test_type == "test":
             return (
-                f"/api/study/students/"
-                f"chapters/{cid}/test/result"
+                f"/api/study/students/chapters/"
+                f"{cid}/test/result"
             )
 
         return (
-            f"/api/study/students/"
-            f"chapters/{cid}/review/result"
+            f"/api/study/students/chapters/"
+            f"{cid}/review/result"
         )
 
-    def _answer_base(
-        self,
-        test_type,
-    ):
-        if test_type == "test":
-            return "test-questions"
-
-        return "review-questions"
+    def _answer_base(self, test_type):
+        return (
+            "test-questions"
+            if test_type == "test"
+            else "review-questions"
+        )
 
     @staticmethod
     def _extract_key(result):
         key = {}
 
-        for choice_result in (
+        for cr in (
             result or {}
-        ).get(
-            "choice_results",
-            [],
-        ) or []:
-
-            qid = choice_result.get(
-                "question_id"
-            )
+        ).get("choice_results", []) or []:
+            qid = cr.get("question_id")
 
             correct = [
-                choice["choice"]["id"]
-                for choice in (
-                    choice_result.get(
-                        "choices"
-                    )
-                    or []
-                )
-                if choice.get("correct")
+                c["choice"]["id"]
+                for c in (cr.get("choices") or [])
+                if c.get("correct")
             ]
 
             if qid and correct:
@@ -1181,44 +497,30 @@ class QureoSolver:
                     correct[0],
                 )
 
-        for description_result in (
+        for dr in (
             result or {}
-        ).get(
-            "description_results",
-            [],
-        ) or []:
-
-            qid = description_result.get(
-                "question_id"
-            )
+        ).get("description_results", []) or []:
+            qid = dr.get("question_id")
 
             if (
                 qid
-                and description_result.get(
-                    "model_answer"
-                ) is not None
+                and dr.get("model_answer") is not None
             ):
                 key[qid] = (
                     "description",
-                    description_result[
-                        "model_answer"
-                    ],
+                    dr["model_answer"],
                 )
 
         return key
 
-    # ========================================================
-    # ANSWER BANK
-    # ========================================================
-
+    # ------------------------------------------------------------ answer bank
     def _load_answers(self):
         try:
             with open(
                 ANSWER_FILE,
                 encoding="utf-8",
-            ) as file:
-                return json.load(file)
-
+            ) as f:
+                return json.load(f)
         except Exception:
             return {}
 
@@ -1227,38 +529,30 @@ class QureoSolver:
             ANSWER_FILE,
             "w",
             encoding="utf-8",
-        ) as file:
+        ) as f:
             json.dump(
                 self.answers,
-                file,
+                f,
                 ensure_ascii=False,
                 indent=1,
             )
 
     def _stored_key(self, cid):
+        """الإجابات المحفوظة لفصل معيّن بصيغة {qid: (kind, value)}."""
         raw = self.answers.get(
             str(cid),
             {},
         )
 
-        result = {}
+        return {
+            int(q): (
+                v[0],
+                v[1],
+            )
+            for q, v in raw.items()
+        }
 
-        for question_id, value in raw.items():
-            try:
-                result[int(question_id)] = (
-                    value[0],
-                    value[1],
-                )
-            except Exception:
-                continue
-
-        return result
-
-    def _save_key(
-        self,
-        cid,
-        key,
-    ):
+    def _save_key(self, cid, key):
         if not key:
             return
 
@@ -1269,14 +563,11 @@ class QureoSolver:
 
         merged.update(
             {
-                str(question_id): [
-                    kind,
-                    value,
+                str(q): [
+                    k,
+                    v,
                 ]
-                for question_id, (
-                    kind,
-                    value,
-                ) in key.items()
+                for q, (k, v) in key.items()
             }
         )
 
@@ -1284,47 +575,37 @@ class QureoSolver:
 
         self._save_answers()
 
-    def _bank_covers(self, chapter):
-        question_count = chapter.get(
+    def _bank_covers(self, ch):
+        """هل بنك الإجابات يغطّي كل أسئلة الفصل؟"""
+        qc = ch.get(
             "question_count",
             0,
         )
 
         return (
-            bool(question_count)
+            bool(qc)
             and len(
                 self.answers.get(
-                    str(chapter["id"]),
+                    str(ch["id"]),
                     {},
                 )
-            ) >= question_count
+            ) >= qc
         )
 
     def _harvest_chapter(self, cid):
+        """يقرأ نتيجة محاولة سابقة لفصل واحد ويحدّث البنك (طلب أو اثنان فقط)."""
         key = {}
 
-        paths = [
-            (
-                f"/api/study/students/"
-                f"chapters/{cid}/review/result"
-            ),
-            (
-                f"/api/study/students/"
-                f"chapters/{cid}/test/result"
-            ),
-        ]
-
-        for path in paths:
-
+        for path in (
+            f"/api/study/students/chapters/{cid}/review/result",
+            f"/api/study/students/chapters/{cid}/test/result",
+        ):
             data = self.api_get_json(
                 path,
                 None,
             )
 
-            if not isinstance(
-                data,
-                dict,
-            ):
+            if not isinstance(data, dict):
                 continue
 
             if isinstance(
@@ -1334,9 +615,7 @@ class QureoSolver:
                 data = data["result"]
 
             key.update(
-                self._extract_key(
-                    data
-                )
+                self._extract_key(data)
             )
 
         if key:
@@ -1348,77 +627,52 @@ class QureoSolver:
         return len(key)
 
     def harvest_course(self):
-        section_id = (
-            self.resolve_section_id()
-        )
+        """يحدّث البنك من نتائج المحاولات السابقة، للفصول غير المغطّاة فقط."""
+        section_id = self.resolve_section_id()
 
-        section = (
-            self.api_get_json(
-                f"/api/study/sections/"
-                f"{section_id}",
-                {},
-            )
-            or {}
-        )
+        section = self.api_get_json(
+            f"/api/study/sections/{section_id}",
+            {},
+        ) or {}
 
-        progress = (
-            self.api_get_json(
-                f"/api/study/students/"
-                f"sections/{section_id}/chapters",
-                [],
-            )
-            or []
-        )
+        progress = self.api_get_json(
+            f"/api/study/students/sections/{section_id}/chapters",
+            [],
+        ) or []
 
-        progress_map = {
-            item.get("chapter_id"): item
-            for item in progress
+        pmap = {
+            p.get("chapter_id"): p
+            for p in progress
         }
 
         found = 0
 
-        for chapter in section.get(
+        for ch in section.get(
             "chapters",
             [],
         ):
-
-            if self._bank_covers(
-                chapter
-            ):
+            if self._bank_covers(ch):
                 continue
-
-            chapter_progress = (
-                progress_map.get(
-                    chapter["id"],
-                    {},
-                )
-                or {}
-            )
 
             if (
-                chapter_progress.get(
-                    "best_correct_count",
-                    0,
-                )
-                <= 0
-            ):
+                pmap.get(
+                    ch["id"],
+                    {},
+                ) or {}
+            ).get(
+                "best_correct_count",
+                0,
+            ) <= 0:
                 continue
 
-            found += (
-                self._harvest_chapter(
-                    chapter["id"]
-                )
+            found += self._harvest_chapter(
+                ch["id"]
             )
 
         print(
-            f"🗄️ بنك الإجابات: تم تحديث "
-            f"{found} إجابة.",
+            f"🗄️ بنك الإجابات: تم تحديث {found} إجابة.",
             flush=True,
         )
-
-    # ========================================================
-    # ANSWERING
-    # ========================================================
 
     def _answer_q(
         self,
@@ -1429,8 +683,7 @@ class QureoSolver:
     ):
         return self._req(
             "PUT",
-            f"/api/study/students/"
-            f"{base}/{qid}/answer/{kind}",
+            f"/api/study/students/{base}/{qid}/answer/{kind}",
             payload,
         )
 
@@ -1442,30 +695,18 @@ class QureoSolver:
         result_path,
         key,
     ):
+        """يبدأ محاولة جديدة ويرسل الإجابات بالترتيب (السيرفر يشترط ترتيب الأسئلة)."""
         self._start_test(cid)
 
         for item in questions:
-
-            if stop_requested():
-                raise RuntimeError(
-                    "تم إيقاف التشغيل بواسطة المستخدم"
-                )
-
-            question = item["question"]
-
-            qid = question["id"]
+            qid = item["question"]["id"]
 
             if item.get("choices"):
-
-                default_choice = (
-                    item["choices"][0]["id"]
-                )
-
-                value = key.get(
+                val = key.get(
                     qid,
                     (
                         "choice",
-                        default_choice,
+                        item["choices"][0]["id"],
                     ),
                 )[1]
 
@@ -1474,13 +715,11 @@ class QureoSolver:
                     qid,
                     "choice",
                     {
-                        "choice_id": value
+                        "choice_id": val
                     },
                 )
-
             else:
-
-                value = key.get(
+                val = key.get(
                     qid,
                     (
                         "description",
@@ -1493,17 +732,14 @@ class QureoSolver:
                     qid,
                     "description",
                     {
-                        "answer_code": value
+                        "answer_code": val
                     },
                 )
 
-        result = (
-            self.api_get_json(
-                result_path,
-                {},
-            )
-            or {}
-        )
+        result = self.api_get_json(
+            result_path,
+            {},
+        ) or {}
 
         if isinstance(
             result.get("result"),
@@ -1518,14 +754,10 @@ class QureoSolver:
         cid,
         test_type="review",
     ):
-        questions = (
-            self.api_get_json(
-                f"/api/study/chapters/"
-                f"{cid}/test",
-                [],
-            )
-            or []
-        )
+        questions = self.api_get_json(
+            f"/api/study/chapters/{cid}/test",
+            [],
+        ) or []
 
         if not questions:
             return {
@@ -1544,9 +776,7 @@ class QureoSolver:
 
         total = len(questions)
 
-        key = self._stored_key(
-            cid
-        )
+        key = self._stored_key(cid)
 
         cached_complete = all(
             item["question"]["id"] in key
@@ -1567,9 +797,7 @@ class QureoSolver:
         )
 
         key.update(
-            self._extract_key(
-                result
-            )
+            self._extract_key(result)
         )
 
         self._save_key(
@@ -1587,8 +815,7 @@ class QureoSolver:
             else:
                 print(
                     f"      ⚠️ البنك غير مطابق — "
-                    f"محاولة 1: "
-                    f"{last_correct}/{total}",
+                    f"محاولة 1: {last_correct}/{total}",
                     flush=True,
                 )
         else:
@@ -1604,12 +831,6 @@ class QureoSolver:
             last_correct < total
             and attempt < 3
         ):
-
-            if stop_requested():
-                raise RuntimeError(
-                    "تم إيقاف التشغيل بواسطة المستخدم"
-                )
-
             attempt += 1
 
             time.sleep(0.3)
@@ -1628,9 +849,7 @@ class QureoSolver:
             )
 
             key.update(
-                self._extract_key(
-                    result
-                )
+                self._extract_key(result)
             )
 
             self._save_key(
@@ -1648,200 +867,147 @@ class QureoSolver:
             "ok": True,
             "correct": last_correct,
             "total": total,
-            "perfect": (
-                last_correct >= total
-            ),
+            "perfect": last_correct >= total,
         }
 
-    # ========================================================
-    # COURSE SOLVER
-    # ========================================================
-
+    # ----------------------------------------------------------------- course
     def solve_course(self):
-        section_id = (
-            self.resolve_section_id()
-        )
+        section_id = self.resolve_section_id()
 
-        section = (
-            self.api_get_json(
-                f"/api/study/sections/"
-                f"{section_id}",
-                {},
-            )
-            or {}
-        )
+        section = self.api_get_json(
+            f"/api/study/sections/{section_id}",
+            {},
+        ) or {}
 
         chapters = section.get(
             "chapters",
             [],
         )
 
-        progress = (
-            self.api_get_json(
-                f"/api/study/students/"
-                f"sections/{section_id}/chapters",
-                [],
-            )
-            or []
-        )
+        progress = self.api_get_json(
+            f"/api/study/students/sections/{section_id}/chapters",
+            [],
+        ) or []
 
-        progress_map = {
-            item.get("chapter_id"): item
-            for item in progress
+        pmap = {
+            p.get("chapter_id"): p
+            for p in progress
         }
 
         print(
-            f"📚 القسم الحالي: {section_id} "
-            f"— عدد الفصول: "
-            f"{len(chapters)}\n",
+            f"📚 القسم الحالي: {section_id} — "
+            f"عدد الفصول: {len(chapters)}\n",
             flush=True,
         )
 
+        # نجيب بيانات الفصول الناقصة
+        # (محاضرات + تقدّم المحاضرات) دفعة واحدة متوازية
         todo = [
-            chapter
-            for chapter in chapters
+            ch
+            for ch in chapters
             if not (
-                chapter.get(
-                    "question_count"
-                )
-                and progress_map.get(
-                    chapter["id"],
+                ch.get("question_count")
+                and pmap.get(
+                    ch["id"],
                     {},
                 ).get(
                     "best_correct_count",
                     0,
-                )
-                >= chapter.get(
+                ) >= ch.get(
                     "question_count"
                 )
             )
         ]
 
-        detail_map = {}
-        lecture_map = {}
+        detail_map, lec_map = {}, {}
 
         if todo:
-
             details = self.fetch_many(
                 [
                     {
                         "method": "GET",
                         "path": (
                             f"/api/study/chapters/"
-                            f"{chapter['id']}"
+                            f"{ch['id']}"
                         ),
                     }
-                    for chapter in todo
+                    for ch in todo
                 ]
             )
 
-            lecture_progress = (
-                self.fetch_many(
-                    [
-                        {
-                            "method": "GET",
-                            "path": (
-                                f"/api/study/students/"
-                                f"chapters/"
-                                f"{chapter['id']}/lectures"
-                            ),
-                        }
-                        for chapter in todo
-                    ]
-                )
+            lec_prog = self.fetch_many(
+                [
+                    {
+                        "method": "GET",
+                        "path": (
+                            f"/api/study/students/chapters/"
+                            f"{ch['id']}/lectures"
+                        ),
+                    }
+                    for ch in todo
+                ]
             )
 
-            for index, chapter in enumerate(
-                todo
-            ):
-                detail_map[
-                    chapter["id"]
-                ] = (
-                    details[index] or {}
-                ).get(
-                    "data"
-                ) or None
+            for i, ch in enumerate(todo):
+                detail_map[ch["id"]] = (
+                    details[i] or {}
+                ).get("data") or None
 
-                lecture_map[
-                    chapter["id"]
-                ] = (
-                    lecture_progress[index]
-                    or {}
-                ).get(
-                    "data"
-                ) or None
+                lec_map[ch["id"]] = (
+                    lec_prog[i] or {}
+                ).get("data") or None
 
         solved = []
 
-        total_chapters = len(
-            chapters
-        )
+        total_ch = len(chapters)
 
         emit_progress(
             self.current_course,
             0,
-            total_chapters,
+            total_ch,
             "",
         )
 
-        for index, chapter in enumerate(
-            chapters
-        ):
-
+        for i, ch in enumerate(chapters):
             if stop_requested():
                 raise RuntimeError(
                     "تم إيقاف التشغيل بواسطة المستخدم"
                 )
 
-            cid = chapter["id"]
-
-            name = chapter.get(
-                "name",
-                "",
-            )
-
-            question_count = chapter.get(
+            cid = ch["id"]
+            name = ch.get("name", "")
+            qcount = ch.get(
                 "question_count",
                 0,
             )
-
-            test_type = chapter.get(
+            test_type = ch.get(
                 "test_type",
                 "review",
             )
 
             emit_progress(
                 self.current_course,
-                index,
-                total_chapters,
+                i,
+                total_ch,
                 name,
             )
 
             print(
-                f"▶️ الفصل "
-                f"{chapter.get('seq')}: "
-                f"{name} ({cid}) — "
-                f"أسئلة: "
-                f"{question_count} "
-                f"[{test_type}]",
+                f"▶️ الفصل {ch.get('seq')}: "
+                f"{name} ({cid}) — أسئلة: "
+                f"{qcount} [{test_type}]",
                 flush=True,
             )
 
-            chapter_progress = (
-                progress_map.get(
+            if (
+                qcount
+                and pmap.get(
                     cid,
                     {},
-                )
-                or {}
-            )
-
-            if (
-                question_count
-                and chapter_progress.get(
+                ).get(
                     "best_correct_count",
                     0,
-                )
-                >= question_count
+                ) >= qcount
             ):
                 print(
                     "   ✅ مُكتمل بالفعل — تخطّي",
@@ -1851,8 +1017,8 @@ class QureoSolver:
                 solved.append(
                     (
                         name,
-                        question_count,
-                        question_count,
+                        qcount,
+                        qcount,
                     )
                 )
 
@@ -1863,66 +1029,59 @@ class QureoSolver:
 
                 continue
 
+            # لو البنك لا يغطّي الفصل وعنده محاولة سابقة،
+            # نستخرج إجاباته (طلب أو اثنان فقط)
             if (
-                not self._bank_covers(
-                    chapter
-                )
-                and chapter_progress.get(
+                not self._bank_covers(ch)
+                and pmap.get(
+                    cid,
+                    {},
+                ).get(
                     "best_correct_count",
                     0,
-                )
-                > 0
+                ) > 0
             ):
-                self._harvest_chapter(
-                    cid
-                )
+                self._harvest_chapter(cid)
 
             self.complete_chapter_lectures(
                 cid,
                 detail_map.get(cid),
-                lecture_map.get(cid),
+                lec_map.get(cid),
             )
 
-            if question_count:
-
-                result = self.solve_test(
+            if qcount:
+                res = self.solve_test(
                     cid,
                     test_type,
                 )
 
-                if result.get("ok"):
-
+                if res.get("ok"):
                     mark = (
                         "💎"
-                        if result["perfect"]
+                        if res["perfect"]
                         else "✔️"
                     )
 
                     print(
                         f"   {mark} الاختبار: "
-                        f"{result['correct']}/"
-                        f"{result['total']}",
+                        f"{res['correct']}/{res['total']}",
                         flush=True,
                     )
 
                     solved.append(
                         (
                             name,
-                            result["correct"],
-                            result["total"],
+                            res["correct"],
+                            res["total"],
                         )
                     )
-
                 else:
-
                     print(
                         f"   ⏭️ تخطّي الاختبار: "
-                        f"{result.get('reason')}",
+                        f"{res.get('reason')}",
                         flush=True,
                     )
-
             else:
-
                 print(
                     "   ℹ️ لا يوجد اختبار لهذا الفصل",
                     flush=True,
@@ -1935,23 +1094,20 @@ class QureoSolver:
 
         emit_progress(
             self.current_course,
-            total_chapters,
-            total_chapters,
+            total_ch,
+            total_ch,
             "تم",
         )
 
         return solved
 
-    # ========================================================
-    # MAIN
-    # ========================================================
-
+    # ------------------------------------------------------------------ main
     def run(
         self,
         student_id=None,
         password=None,
         courses=None,
-        close_pause=0,
+        close_pause=5,
     ):
         if courses:
             self.courses = courses
@@ -1959,42 +1115,27 @@ class QureoSolver:
         self.start()
 
         try:
-
             self.login(
                 student_id,
                 password,
             )
 
-            for course_name in self.courses:
-
-                if stop_requested():
-                    raise RuntimeError(
-                        "تم إيقاف التشغيل بواسطة المستخدم"
-                    )
-
+            for name in self.courses:
                 print(
                     "\n" + "=" * 60,
                     flush=True,
                 )
 
-                self.enter_course(
-                    course_name
-                )
+                self.enter_course(name)
 
-                self.current_course = (
-                    course_name
-                )
+                self.current_course = name
 
-                solved = (
-                    self.solve_course()
-                )
+                solved = self.solve_course()
 
                 perfect = sum(
                     1
-                    for _, correct, total
-                    in solved
-                    if total
-                    and correct == total
+                    for _, c, t in solved
+                    if t and c == t
                 )
 
                 print(
@@ -2003,10 +1144,8 @@ class QureoSolver:
                 )
 
                 print(
-                    f"✨ اكتمل مسار "
-                    f"{course_name}! "
-                    f"الفصول المنجزة: "
-                    f"{len(solved)} "
+                    f"✨ اكتمل مسار {name}! "
+                    f"الفصول المنجزة: {len(solved)} "
                     f"(كاملة: {perfect})",
                     flush=True,
                 )
@@ -2016,40 +1155,19 @@ class QureoSolver:
                     flush=True,
                 )
 
-            return True
-
         finally:
-
-            if (
-                close_pause
-                and close_pause > 0
-            ):
+            if close_pause:
                 print(
-                    f"\n🖐️ سيتم إغلاق المتصفح "
-                    f"خلال {close_pause} ثوانٍ...",
+                    f"\n🖐️ سيتم إغلاق المتصفح خلال "
+                    f"{close_pause} ثوانٍ...",
                     flush=True,
                 )
 
-                time.sleep(
-                    close_pause
-                )
+                time.sleep(close_pause)
 
-            if self.browser is not None:
-                try:
-                    self.browser.close()
-                except Exception:
-                    pass
+            self.browser.close()
+            self.playwright.stop()
 
-            if self.playwright is not None:
-                try:
-                    self.playwright.stop()
-                except Exception:
-                    pass
-
-
-# ============================================================
-# LOCAL RUN
-# ============================================================
 
 if __name__ == "__main__":
     QureoSolver(
