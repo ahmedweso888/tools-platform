@@ -48,6 +48,21 @@ SHOULD_STOP = None
 
 
 # ----------------------------------------------------------------------
+# Browser fingerprint / request headers
+# ----------------------------------------------------------------------
+
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/154.0.0.0 Safari/537.36"
+)
+
+BROWSER_ACCEPT_LANGUAGE = (
+    "en-US,en;q=0.9,ar;q=0.8,ar-SA;q=0.7"
+)
+
+
+# ----------------------------------------------------------------------
 # Optional Qureo proxy
 # ----------------------------------------------------------------------
 
@@ -77,14 +92,6 @@ def build_qureo_proxy():
     Optional:
         QUREO_PROXY_USERNAME
         QUREO_PROXY_PASSWORD
-
-    Example:
-        QUREO_PROXY_SERVER=http://1.2.3.4:8080
-
-    Or:
-        QUREO_PROXY_SERVER=http://1.2.3.4:8080
-        QUREO_PROXY_USERNAME=myuser
-        QUREO_PROXY_PASSWORD=mypass
     """
 
     if not QUREO_PROXY_SERVER:
@@ -214,6 +221,14 @@ class QureoSolver:
                 "وصحة إعدادات الـ Proxy إن وُجدت."
             ) from e
 
+        # --------------------------------------------------------------
+        # Browser context
+        #
+        # مهم:
+        # لا نضع Referer ثابت هنا.
+        # Playwright/Chromium سيولد Referer المناسب لكل asset request.
+        # --------------------------------------------------------------
+
         self.context = self.browser.new_context(
             viewport={
                 "width": 1280,
@@ -221,14 +236,91 @@ class QureoSolver:
             },
             locale="en-US",
             timezone_id="Africa/Cairo",
+            user_agent=BROWSER_USER_AGENT,
             extra_http_headers={
-                "Accept-Language": (
-                    "en-US,en;q=0.9,ar;q=0.8"
-                ),
+                "Accept-Language": BROWSER_ACCEPT_LANGUAGE,
             },
         )
 
         self.page = self.context.new_page()
+
+        # --------------------------------------------------------------
+        # request diagnostics
+        # --------------------------------------------------------------
+
+        def on_request(request):
+            try:
+                url = request.url
+
+                if (
+                    "/assets/" not in url
+                    and request.resource_type
+                    not in {
+                        "script",
+                        "stylesheet",
+                    }
+                ):
+                    return
+
+                headers = request.all_headers()
+
+                print(
+                    "➡️ REQUEST: "
+                    f"{request.method} | "
+                    f"{request.resource_type} | "
+                    f"{url}",
+                    flush=True,
+                )
+
+                print(
+                    "   UA: "
+                    f"{headers.get('user-agent', '')[:180]}",
+                    flush=True,
+                )
+
+                print(
+                    "   Accept: "
+                    f"{headers.get('accept', '')[:180]}",
+                    flush=True,
+                )
+
+                print(
+                    "   Origin: "
+                    f"{headers.get('origin', '')}",
+                    flush=True,
+                )
+
+                print(
+                    "   Referer: "
+                    f"{headers.get('referer', '')}",
+                    flush=True,
+                )
+
+                print(
+                    "   Sec-Fetch-Dest: "
+                    f"{headers.get('sec-fetch-dest', '')}",
+                    flush=True,
+                )
+
+                print(
+                    "   Sec-Fetch-Mode: "
+                    f"{headers.get('sec-fetch-mode', '')}",
+                    flush=True,
+                )
+
+                print(
+                    "   Sec-Fetch-Site: "
+                    f"{headers.get('sec-fetch-site', '')}",
+                    flush=True,
+                )
+
+            except Exception:
+                pass
+
+        self.page.on(
+            "request",
+            on_request,
+        )
 
         # --------------------------------------------------------------
         # request failures
@@ -268,6 +360,7 @@ class QureoSolver:
         def on_response(response):
             try:
                 url = response.url
+
                 resource_type = (
                     response.request.resource_type
                 )
@@ -310,6 +403,39 @@ class QureoSolver:
                     f"{url}",
                     flush=True,
                 )
+
+                server = response.headers.get(
+                    "server",
+                    "",
+                )
+
+                cache = response.headers.get(
+                    "x-cache",
+                    "",
+                )
+
+                pop = response.headers.get(
+                    "x-amz-cf-pop",
+                    "",
+                )
+
+                if server:
+                    print(
+                        f"   SERVER: {server}",
+                        flush=True,
+                    )
+
+                if cache:
+                    print(
+                        f"   X-CACHE: {cache}",
+                        flush=True,
+                    )
+
+                if pop:
+                    print(
+                        f"   CF-POP: {pop}",
+                        flush=True,
+                    )
 
                 if (
                     resource_type == "script"
@@ -389,7 +515,7 @@ class QureoSolver:
         """
         Checks the public IP used by the Playwright request context.
 
-        This is diagnostic only. It does not expose proxy credentials.
+        Diagnostic only.
         """
 
         print(
@@ -403,13 +529,7 @@ class QureoSolver:
                 timeout=20000,
                 headers={
                     "Accept": "application/json",
-                    "User-Agent": (
-                        "Mozilla/5.0 "
-                        "(Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) "
-                        "Chrome/142.0.0.0 Safari/537.36"
-                    ),
+                    "User-Agent": BROWSER_USER_AGENT,
                 },
             )
 
@@ -434,7 +554,10 @@ class QureoSolver:
             try:
                 data = response.json()
 
-                ip = data.get("ip", "")
+                ip = data.get(
+                    "ip",
+                    "",
+                )
 
                 if ip:
                     print(
@@ -472,7 +595,11 @@ class QureoSolver:
     # DIRECT NETWORK DIAGNOSTIC
     # ------------------------------------------------------------------
 
-    def _direct_asset_diagnostic(self, url):
+    def _direct_asset_diagnostic(
+        self,
+        url,
+        referer=None,
+    ):
         print(
             "\n"
             "========== DIRECT QUREO ASSET TEST ==========",
@@ -485,27 +612,27 @@ class QureoSolver:
         )
 
         try:
+            headers = {
+                "User-Agent": BROWSER_USER_AGENT,
+                "Accept": (
+                    "*/*"
+                ),
+                "Accept-Language": (
+                    BROWSER_ACCEPT_LANGUAGE
+                ),
+                "Origin": PORTAL_HOME.rstrip("/"),
+                "Sec-Fetch-Dest": "script",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+            }
+
+            if referer:
+                headers["Referer"] = referer
+
             response = self.context.request.get(
                 url,
                 timeout=30000,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 "
-                        "(Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) "
-                        "Chrome/142.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": (
-                        "application/javascript,"
-                        "text/javascript,"
-                        "application/ecmascript,"
-                        "*/*;q=0.8"
-                    ),
-                    "Accept-Language": (
-                        "en-US,en;q=0.9,ar;q=0.8"
-                    ),
-                },
+                headers=headers,
             )
 
             content_type = (
@@ -532,13 +659,25 @@ class QureoSolver:
             )
 
             print(
-                f"SERVER: "
+                "SERVER: "
                 f"{response.headers.get('server', '')}",
                 flush=True,
             )
 
             print(
-                f"LOCATION: "
+                "X-CACHE: "
+                f"{response.headers.get('x-cache', '')}",
+                flush=True,
+            )
+
+            print(
+                "CF-POP: "
+                f"{response.headers.get('x-amz-cf-pop', '')}",
+                flush=True,
+            )
+
+            print(
+                "LOCATION: "
                 f"{response.headers.get('location', '')}",
                 flush=True,
             )
@@ -805,18 +944,23 @@ class QureoSolver:
         url,
     ):
         try:
+            headers = {
+                "User-Agent": BROWSER_USER_AGENT,
+                "Accept": "*/*",
+                "Accept-Language": (
+                    BROWSER_ACCEPT_LANGUAGE
+                ),
+                "Origin": PORTAL_HOME.rstrip("/"),
+                "Sec-Fetch-Dest": "script",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+            }
+
             response = (
                 self.context.request.get(
                     url,
                     timeout=15000,
-                    headers={
-                        "Accept": (
-                            "application/"
-                            "javascript,"
-                            "text/javascript,"
-                            "*/*;q=0.8"
-                        ),
-                    },
+                    headers=headers,
                 )
             )
 
@@ -891,7 +1035,8 @@ class QureoSolver:
 
         if js_assets:
             self._direct_asset_diagnostic(
-                js_assets[0]
+                js_assets[0],
+                referer=self.page.url,
             )
 
         broken = False
@@ -922,7 +1067,7 @@ class QureoSolver:
                 and (
                     status >= 400
                     or (
-                        url.endswith(".js")
+                        url.lower().endswith(".js")
                         and (
                             "javascript"
                             not in content_type
@@ -945,12 +1090,12 @@ class QureoSolver:
 
             print(
                 "❌ واحد أو أكثر من ملفات "
-                "/assets/*.js يرجع HTML بدل JavaScript.",
+                "/assets/*.js يرجع MIME غير JavaScript.",
                 flush=True,
             )
 
             print(
-                "⚠️ المشكلة ليست selector ولا iframe.",
+                "⚠️ تم اختبار Browser-like headers أيضًا.",
                 flush=True,
             )
 
@@ -1143,9 +1288,8 @@ class QureoSolver:
                 raise RuntimeError(
                     "Qureo Frontend لا يتم تحميله "
                     "من الخادم بشكل صحيح. "
-                    "ملفات /assets/*.js ترجع "
-                    "Content-Type: text/html بدل "
-                    "JavaScript. "
+                    "ملفات /assets/*.js لا ترجع "
+                    "JavaScript صالحًا. "
                     "تمت تجربة /login و /. "
                     f"URL={self.page.url} | "
                     f"TITLE={self.page.title()}"
