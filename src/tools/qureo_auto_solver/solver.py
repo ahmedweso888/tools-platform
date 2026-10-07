@@ -1,4 +1,3 @@
-
 import json
 import os
 import re
@@ -90,49 +89,64 @@ class QureoSolver:
             wait_until="domcontentloaded",
         )
 
+        self.page.wait_for_timeout(1500)
+
         print(f"🌐 صفحة الدخول: {self.page.url}", flush=True)
 
-        # ==============================================================
-        # Qureo يعرض زرين في صفحة اختيار البوابة.
-        # المطلوب هو الزر الثاني تحديدًا.
-        #
-        # مهم:
-        # لا نبحث عن الزر قبل goto().
-        # ولا نعتمد على class غير موجود في الصفحة.
-        # ==============================================================
-
         try:
-            self.page.wait_for_timeout(500)
+            clickables = self.page.locator(
+                "a:visible, "
+                "button:visible, "
+                "[role='button']:visible, "
+                "[onclick]:visible, "
+                ".portal-selection-button:visible, "
+                ".portal-selection-button-secondary:visible"
+            )
 
-            buttons = self.page.locator("button:visible")
-            count = buttons.count()
+            count = clickables.count()
 
-            print(f"🔎 عدد الأزرار الظاهرة: {count}", flush=True)
+            print(
+                f"🔎 عدد العناصر القابلة للنقر: {count}",
+                flush=True,
+            )
 
             for i in range(count):
                 try:
-                    text = buttons.nth(i).inner_text().strip()
+                    text = clickables.nth(i).inner_text().strip()
                 except Exception:
                     text = ""
 
                 print(
-                    f"   🔘 الزر {i + 1}: {text!r}",
+                    f"   🔘 العنصر {i + 1}: {text!r}",
                     flush=True,
                 )
 
-            if count < 2:
-                raise RuntimeError(
-                    f"لم يتم العثور على الزر الثاني. "
-                    f"عدد الأزرار الظاهرة: {count}"
+            target = clickables.filter(
+                has_text=re.compile(
+                    r"Go to Learning Login|انتقل إلى تسجيل الدخول للتعلم",
+                    re.IGNORECASE,
                 )
-
-            # الزر الثاني فقط — index 1
-            buttons.nth(1).click()
-
-            print(
-                "✅ تم الضغط على الزر الثاني الخاص بتسجيل دخول التعلم.",
-                flush=True,
             )
+
+            if target.count() > 0:
+                target.first.click()
+                print(
+                    "✅ تم الضغط على زر Go to Learning Login.",
+                    flush=True,
+                )
+            else:
+                if count < 2:
+                    raise RuntimeError(
+                        f"لم يتم العثور على زر تسجيل دخول التعلم. "
+                        f"عدد العناصر القابلة للنقر: {count}"
+                    )
+
+                clickables.nth(1).click()
+
+                print(
+                    "✅ تم الضغط على العنصر الثاني الخاص بتسجيل دخول التعلم.",
+                    flush=True,
+                )
 
         except Exception as e:
             raise RuntimeError(
@@ -1161,5 +1175,5 @@ class QureoSolver:
 
 if __name__ == "__main__":
     QureoSolver(
-        headless=False
+        headless=True
     ).run()
