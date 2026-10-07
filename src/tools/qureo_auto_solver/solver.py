@@ -3,7 +3,7 @@ import os
 import re
 import sys
 import time
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qsl, urlencode
 
 from playwright.sync_api import sync_playwright
 
@@ -64,6 +64,9 @@ BROWSER_ACCEPT_LANGUAGE = (
 
 # ----------------------------------------------------------------------
 # Optional Qureo proxy
+#
+# مهم:
+# لو QUREO_PROXY_SERVER غير موجود أو فاضي، لن يتم استخدام Proxy.
 # ----------------------------------------------------------------------
 
 QUREO_PROXY_SERVER = os.getenv(
@@ -220,14 +223,6 @@ class QureoSolver:
                 "تأكد من تثبيت Playwright Chromium "
                 "وصحة إعدادات الـ Proxy إن وُجدت."
             ) from e
-
-        # --------------------------------------------------------------
-        # Browser context
-        #
-        # مهم:
-        # لا نضع Referer ثابت هنا.
-        # Playwright/Chromium سيولد Referer المناسب لكل asset request.
-        # --------------------------------------------------------------
 
         self.context = self.browser.new_context(
             viewport={
@@ -389,6 +384,18 @@ class QureoSolver:
                     "status": response.status,
                     "resource_type": resource_type,
                     "content_type": content_type,
+                    "server": response.headers.get(
+                        "server",
+                        "",
+                    ),
+                    "x_cache": response.headers.get(
+                        "x-cache",
+                        "",
+                    ),
+                    "cf_pop": response.headers.get(
+                        "x-amz-cf-pop",
+                        "",
+                    ),
                 }
 
                 self.asset_results.append(
@@ -512,12 +519,6 @@ class QureoSolver:
     # ------------------------------------------------------------------
 
     def _check_outbound_ip(self):
-        """
-        Checks the public IP used by the Playwright request context.
-
-        Diagnostic only.
-        """
-
         print(
             "\n========== OUTBOUND IP TEST ==========",
             flush=True,
@@ -530,6 +531,7 @@ class QureoSolver:
                 headers={
                     "Accept": "application/json",
                     "User-Agent": BROWSER_USER_AGENT,
+                    "Accept-Language": BROWSER_ACCEPT_LANGUAGE,
                 },
             )
 
@@ -614,9 +616,7 @@ class QureoSolver:
         try:
             headers = {
                 "User-Agent": BROWSER_USER_AGENT,
-                "Accept": (
-                    "*/*"
-                ),
+                "Accept": "*/*",
                 "Accept-Language": (
                     BROWSER_ACCEPT_LANGUAGE
                 ),
@@ -624,6 +624,8 @@ class QureoSolver:
                 "Sec-Fetch-Dest": "script",
                 "Sec-Fetch-Mode": "cors",
                 "Sec-Fetch-Site": "same-origin",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
             }
 
             if referer:
@@ -677,6 +679,24 @@ class QureoSolver:
             )
 
             print(
+                "CACHE-CONTROL: "
+                f"{response.headers.get('cache-control', '')}",
+                flush=True,
+            )
+
+            print(
+                "AGE: "
+                f"{response.headers.get('age', '')}",
+                flush=True,
+            )
+
+            print(
+                "ETAG: "
+                f"{response.headers.get('etag', '')}",
+                flush=True,
+            )
+
+            print(
                 "LOCATION: "
                 f"{response.headers.get('location', '')}",
                 flush=True,
@@ -715,6 +735,14 @@ class QureoSolver:
                 "status": response.status,
                 "content_type": content_type,
                 "url": response.url,
+                "x_cache": response.headers.get(
+                    "x-cache",
+                    "",
+                ),
+                "cf_pop": response.headers.get(
+                    "x-amz-cf-pop",
+                    "",
+                ),
             }
 
         except Exception as e:
@@ -739,6 +767,452 @@ class QureoSolver:
                 "url": url,
                 "error": str(e),
             }
+
+    # ------------------------------------------------------------------
+    # CloudFront multi-test diagnostic
+    # ------------------------------------------------------------------
+
+    def _cloudfront_asset_diagnostic(
+        self,
+        asset_url,
+        referer=None,
+    ):
+        """
+        يفحص نفس الـ asset بثلاث طرق:
+
+        1. NORMAL
+        2. CACHE_BYPASS
+        3. QUERY_BYPASS
+
+        الهدف معرفة هل CloudFront يعيد HTML
+        بسبب cache / POP / routing.
+        """
+
+        print(
+            "\n"
+            "========== CLOUD FRONT ASSET DIAGNOSTIC ==========",
+            flush=True,
+        )
+
+        print(
+            f"🎯 ORIGINAL URL: {asset_url}",
+            flush=True,
+        )
+
+        parsed = urlsplit(asset_url)
+
+        base_headers = {
+            "User-Agent": BROWSER_USER_AGENT,
+            "Accept": "*/*",
+            "Accept-Language": BROWSER_ACCEPT_LANGUAGE,
+            "Origin": PORTAL_HOME.rstrip("/"),
+            "Sec-Fetch-Dest": "script",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+        }
+
+        if referer:
+            base_headers["Referer"] = referer
+
+        query_items = parse_qsl(
+            parsed.query,
+            keep_blank_values=True,
+        )
+
+        query_items.append(
+            (
+                "__wiso_cache_bypass",
+                str(int(time.time() * 1000)),
+            )
+        )
+
+        query_bypass_url = urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                urlencode(query_items),
+                parsed.fragment,
+            )
+        )
+
+        tests = [
+            (
+                "NORMAL",
+                asset_url,
+                {
+                    **base_headers,
+                },
+            ),
+            (
+                "CACHE_BYPASS",
+                asset_url,
+                {
+                    **base_headers,
+                    "Cache-Control": (
+                        "no-cache, no-store, max-age=0"
+                    ),
+                    "Pragma": "no-cache",
+                },
+            ),
+            (
+                "QUERY_BYPASS",
+                query_bypass_url,
+                {
+                    **base_headers,
+                    "Cache-Control": (
+                        "no-cache, no-store, max-age=0"
+                    ),
+                    "Pragma": "no-cache",
+                },
+            ),
+        ]
+
+        results = []
+
+        request = None
+
+        try:
+            request = self.playwright.request.new_context(
+                ignore_https_errors=False,
+                timeout=30000,
+            )
+
+            for test_name, test_url, headers in tests:
+                print(
+                    "\n"
+                    f"========== TEST: {test_name} ==========",
+                    flush=True,
+                )
+
+                print(
+                    f"URL: {test_url}",
+                    flush=True,
+                )
+
+                try:
+                    response = request.get(
+                        test_url,
+                        headers=headers,
+                        timeout=30000,
+                    )
+
+                    content_type = (
+                        response.headers.get(
+                            "content-type",
+                            "",
+                        )
+                        or ""
+                    )
+
+                    server = (
+                        response.headers.get(
+                            "server",
+                            "",
+                        )
+                        or ""
+                    )
+
+                    x_cache = (
+                        response.headers.get(
+                            "x-cache",
+                            "",
+                        )
+                        or ""
+                    )
+
+                    cf_pop = (
+                        response.headers.get(
+                            "x-amz-cf-pop",
+                            "",
+                        )
+                        or ""
+                    )
+
+                    content_length = (
+                        response.headers.get(
+                            "content-length",
+                            "",
+                        )
+                        or ""
+                    )
+
+                    cache_control = (
+                        response.headers.get(
+                            "cache-control",
+                            "",
+                        )
+                        or ""
+                    )
+
+                    age = (
+                        response.headers.get(
+                            "age",
+                            "",
+                        )
+                        or ""
+                    )
+
+                    etag = (
+                        response.headers.get(
+                            "etag",
+                            "",
+                        )
+                        or ""
+                    )
+
+                    try:
+                        body = response.body()
+                        body_preview = (
+                            body[:500]
+                            .decode(
+                                "utf-8",
+                                errors="replace",
+                            )
+                            .replace(
+                                "\r",
+                                " ",
+                            )
+                            .replace(
+                                "\n",
+                                " ",
+                            )
+                        )
+                    except Exception:
+                        body_preview = ""
+
+                    is_javascript = (
+                        "javascript"
+                        in content_type.lower()
+                        or "ecmascript"
+                        in content_type.lower()
+                    )
+
+                    is_html = (
+                        "text/html"
+                        in content_type.lower()
+                        or body_preview.lstrip()
+                        .lower()
+                        .startswith("<!doctype html")
+                        or body_preview.lstrip()
+                        .lower()
+                        .startswith("<html")
+                    )
+
+                    result = {
+                        "test": test_name,
+                        "url": test_url,
+                        "status": response.status,
+                        "content_type": content_type,
+                        "server": server,
+                        "x_cache": x_cache,
+                        "cf_pop": cf_pop,
+                        "content_length": content_length,
+                        "cache_control": cache_control,
+                        "age": age,
+                        "etag": etag,
+                        "is_javascript": is_javascript,
+                        "is_html": is_html,
+                        "body_preview": body_preview,
+                    }
+
+                    results.append(
+                        result
+                    )
+
+                    print(
+                        f"STATUS: {response.status}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"CONTENT-TYPE: {content_type}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"CONTENT-LENGTH: "
+                        f"{content_length}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"SERVER: {server}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"X-CACHE: {x_cache}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"CF-POP: {cf_pop}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"CACHE-CONTROL: "
+                        f"{cache_control}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"AGE: {age}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"ETAG: {etag}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"JAVASCRIPT: "
+                        f"{'YES' if is_javascript else 'NO'}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"HTML: "
+                        f"{'YES' if is_html else 'NO'}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"BODY PREVIEW: "
+                        f"{body_preview}",
+                        flush=True,
+                    )
+
+                    if is_javascript:
+                        print(
+                            "✅ هذا الاختبار أعاد "
+                            "JavaScript صحيح.",
+                            flush=True,
+                        )
+
+                    elif is_html:
+                        print(
+                            "❌ هذا الاختبار أعاد "
+                            "HTML بدل JavaScript.",
+                            flush=True,
+                        )
+
+                    else:
+                        print(
+                            "⚠️ الاستجابة ليست "
+                            "JavaScript ولا HTML واضحًا.",
+                            flush=True,
+                        )
+
+                except Exception as test_error:
+                    print(
+                        f"❌ TEST FAILED [{test_name}]: "
+                        f"{type(test_error).__name__}: "
+                        f"{test_error}",
+                        flush=True,
+                    )
+
+                    results.append(
+                        {
+                            "test": test_name,
+                            "url": test_url,
+                            "status": 0,
+                            "content_type": "",
+                            "error": str(test_error),
+                            "is_javascript": False,
+                            "is_html": False,
+                        }
+                    )
+
+        except Exception as e:
+            print(
+                "❌ تعذر إنشاء Request Context "
+                f"للتشخيص: {e}",
+                flush=True,
+            )
+
+        finally:
+            if request is not None:
+                try:
+                    request.dispose()
+                except Exception:
+                    pass
+
+        javascript_results = [
+            item
+            for item in results
+            if item.get("is_javascript")
+        ]
+
+        html_results = [
+            item
+            for item in results
+            if item.get("is_html")
+        ]
+
+        print(
+            "\n========== CLOUD FRONT DIAGNOSTIC RESULT ==========",
+            flush=True,
+        )
+
+        if javascript_results:
+            print(
+                "🎯 تم العثور على استجابة "
+                "JavaScript صحيحة في أحد الاختبارات.",
+                flush=True,
+            )
+
+            for item in javascript_results:
+                print(
+                    "   ✅ "
+                    f"{item.get('test')} | "
+                    f"{item.get('content_type')} | "
+                    f"CF-POP={item.get('cf_pop')} | "
+                    f"X-CACHE={item.get('x_cache')}",
+                    flush=True,
+                )
+
+        elif html_results:
+            print(
+                "❌ كل الاختبارات التي استجابت "
+                "بشكل واضح أعادت HTML بدل JavaScript.",
+                flush=True,
+            )
+
+            for item in html_results:
+                print(
+                    "   ❌ "
+                    f"{item.get('test')} | "
+                    f"{item.get('content_type')} | "
+                    f"CF-POP={item.get('cf_pop')} | "
+                    f"X-CACHE={item.get('x_cache')}",
+                    flush=True,
+                )
+
+        else:
+            print(
+                "⚠️ لم يتم الحصول على استجابة "
+                "JavaScript أو HTML واضحة.",
+                flush=True,
+            )
+
+        print(
+            "========== END CLOUD FRONT DIAGNOSTIC ==========\n",
+            flush=True,
+        )
+
+        return {
+            "asset_url": asset_url,
+            "results": results,
+            "has_javascript": bool(
+                javascript_results
+            ),
+            "has_html": bool(
+                html_results
+            ),
+        }
 
     # ------------------------------------------------------------------
     # diagnostics
@@ -954,6 +1428,8 @@ class QureoSolver:
                 "Sec-Fetch-Dest": "script",
                 "Sec-Fetch-Mode": "cors",
                 "Sec-Fetch-Site": "same-origin",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
             }
 
             response = (
@@ -980,10 +1456,30 @@ class QureoSolver:
                 flush=True,
             )
 
+            print(
+                "   X-CACHE: "
+                f"{response.headers.get('x-cache', '')}",
+                flush=True,
+            )
+
+            print(
+                "   CF-POP: "
+                f"{response.headers.get('x-amz-cf-pop', '')}",
+                flush=True,
+            )
+
             return {
                 "status": response.status,
                 "content_type": content_type,
                 "url": url,
+                "x_cache": response.headers.get(
+                    "x-cache",
+                    "",
+                ),
+                "cf_pop": response.headers.get(
+                    "x-amz-cf-pop",
+                    "",
+                ),
             }
 
         except Exception as e:
@@ -1022,10 +1518,6 @@ class QureoSolver:
             flush=True,
         )
 
-        # --------------------------------------------------------------
-        # الاختبار المباشر الحاسم
-        # --------------------------------------------------------------
-
         js_assets = [
             url
             for url in urls
@@ -1033,8 +1525,17 @@ class QureoSolver:
             and url.lower().endswith(".js")
         ]
 
+        # --------------------------------------------------------------
+        # CloudFront diagnostic على أول JS
+        # --------------------------------------------------------------
+
         if js_assets:
             self._direct_asset_diagnostic(
+                js_assets[0],
+                referer=self.page.url,
+            )
+
+            self._cloudfront_asset_diagnostic(
                 js_assets[0],
                 referer=self.page.url,
             )
@@ -1083,7 +1584,7 @@ class QureoSolver:
             self.frontend_broken = True
 
             print(
-                "\n❌ Qureo Frontend لا يتم تحميله "
+                "\n❌ Qureo Frontend لا يتم تحميل "
                 "بشكل صحيح.",
                 flush=True,
             )
@@ -1095,7 +1596,8 @@ class QureoSolver:
             )
 
             print(
-                "⚠️ تم اختبار Browser-like headers أيضًا.",
+                "⚠️ تم اختبار Browser-like headers "
+                "و Cache/Query bypass.",
                 flush=True,
             )
 
